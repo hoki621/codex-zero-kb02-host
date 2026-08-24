@@ -13,6 +13,18 @@ Print a complete CDC state frame without opening a serial device:
 npm run dry-run -- WIBDUE
 ```
 
+Run the bridge from a Herdr-managed pane after installing dependencies:
+
+```sh
+npm ci
+ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v11 npm start
+```
+
+`HERDR_SOCKET_PATH` is supplied by Herdr. `ZERO_KB02_PORT` is optional when
+exactly one connected USB CDC device answers the v1 handshake. Stop the bridge
+with Ctrl-C. It sends `OFFLINE` while Herdr is unavailable, retries USB and
+Herdr connections, and reconciles missed Herdr events every five seconds.
+
 At runtime, `/dev/cu.usbmodem*` devices must answer `HELLO ZERO-KB02 1`.
 If more than one does, set `ZERO_KB02_PORT` to the intended path.
 
