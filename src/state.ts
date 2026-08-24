@@ -1,0 +1,270 @@
+import {
+  HerdrClient,
+  ProtocolVersionError,
+  type HerdrEvent,
+  type RawAgent,
+  type Subscription,
+} from "./herdr.js";
+import {
+  assignStickySlots,
+  normalizeStatus,
+  SLOT_COUNT,
+  type AgentStatus,
+} from "./slots.js";
+
+export const DEFAULT_RECONCILE_MS = 5_000;
+const DEFAULT_RETRY_MS = 1_000;
+
+export interface CodexAgent {
+  terminalId: string;
+  paneId: string;
+  workspaceId: string;
+  tabId: string;
+  status: AgentStatus;
+  sequence: number;
+}
+
+export interface SlotState extends CodexAgent {
+  index: number;
+}
+
+export interface HerdrState {
+  online: boolean;
+  slots: readonly (SlotState | null)[];
+}
+
+export interface HerdrStateOptions {
+  socketPath: string;
+  onState: (state: HerdrState) => void;
+  onError?: (error: Error) => void;
+  reconcileMs?: number;
+  retryMs?: number;
+}
+
+const BASE_SUBSCRIPTIONS: readonly Subscription[] = [
+  { type: "pane.created" },
+  { type: "pane.closed" },
+  { type: "pane.moved" },
+  { type: "pane.agent_detected" },
+];
+
+function codexAgents(rawAgents: readonly RawAgent[]): CodexAgent[] {
+  const agents: CodexAgent[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawAgents) {
+    if (
+      raw.agent !== "codex" ||
+      typeof raw.terminal_id !== "string" ||
+      typeof raw.pane_id !== "string" ||
+      typeof raw.workspace_id !== "string" ||
+      typeof raw.tab_id !== "string" ||
+      seen.has(raw.terminal_id)
+    ) {
+      continue;
+    }
+    seen.add(raw.terminal_id);
+    agents.push({
+      terminalId: raw.terminal_id,
+      paneId: raw.pane_id,
+      workspaceId: raw.workspace_id,
+      tabId: raw.tab_id,
+      status: normalizeStatus(raw.agent_status),
+      sequence:
+        typeof raw.state_change_seq === "number" &&
+        Number.isSafeInteger(raw.state_change_seq) &&
+        raw.state_change_seq >= 0
+          ? raw.state_change_seq
+          : 0,
+    });
+  }
+  return agents;
+}
+
+function paneKey(agents: readonly CodexAgent[]): string {
+  return agents
+    .map((agent) => agent.paneId)
+    .sort()
+    .join("\n");
+}
+
+export class HerdrStateSource {
+  private readonly client: HerdrClient;
+  private readonly reconcileMs: number;
+  private readonly retryMs: number;
+  private slotIds: (string | null)[] = Array.from(
+    { length: SLOT_COUNT },
+    () => null,
+  );
+  private agents = new Map<string, CodexAgent>();
+  private closeSubscription: (() => void) | null = null;
+  private subscriptionGeneration = 0;
+  private subscribedPanes = "";
+  private reconcileTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  private reconciling: Promise<void> | null = null;
+  private reconcileQueued = false;
+  private rebuilding = false;
+  private stopped = true;
+
+  constructor(private readonly options: HerdrStateOptions) {
+    this.client = new HerdrClient(options.socketPath);
+    this.reconcileMs = options.reconcileMs ?? DEFAULT_RECONCILE_MS;
+    this.retryMs = options.retryMs ?? DEFAULT_RETRY_MS;
+  }
+
+  async start(): Promise<void> {
+    if (!this.stopped) return;
+    this.stopped = false;
+    try {
+      await this.establish();
+    } catch (error) {
+      this.stop();
+      throw error;
+    }
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.subscriptionGeneration++;
+    this.closeSubscription?.();
+    this.closeSubscription = null;
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.reconcileTimer = null;
+    this.retryTimer = null;
+  }
+
+  private async establish(): Promise<void> {
+    await this.client.checkProtocol();
+    const before = codexAgents(await this.client.agentList());
+    const generation = ++this.subscriptionGeneration;
+    const subscriptions = [
+      ...BASE_SUBSCRIPTIONS,
+      ...before.map((agent) => ({
+        type: "pane.agent_status_changed",
+        pane_id: agent.paneId,
+      })),
+    ];
+    const close = await this.client.subscribe(
+      subscriptions,
+      (event) => this.onEvent(generation, event),
+      () => this.onSubscriptionClosed(generation),
+    );
+    if (this.stopped || generation !== this.subscriptionGeneration) {
+      close();
+      return;
+    }
+    this.closeSubscription = close;
+    this.subscribedPanes = paneKey(before);
+
+    const after = codexAgents(await this.client.agentList());
+    this.applyAgents(after);
+    this.startReconcileTimer();
+    if (paneKey(after) !== this.subscribedPanes) this.rebuildSubscription();
+  }
+
+  private startReconcileTimer(): void {
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    this.reconcileTimer = setInterval(
+      () => void this.reconcile(),
+      this.reconcileMs,
+    );
+  }
+
+  private onEvent(generation: number, _event: HerdrEvent): void {
+    if (this.stopped || generation !== this.subscriptionGeneration) return;
+    void this.reconcile();
+  }
+
+  private onSubscriptionClosed(generation: number): void {
+    if (this.stopped || generation !== this.subscriptionGeneration) return;
+    this.disconnect(new Error("Herdr subscription closed"));
+  }
+
+  private reconcile(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    if (this.reconciling) {
+      this.reconcileQueued = true;
+      return this.reconciling;
+    }
+    this.reconciling = this.client
+      .agentList()
+      .then((raw) => {
+        const agents = codexAgents(raw);
+        this.applyAgents(agents);
+        if (paneKey(agents) !== this.subscribedPanes) {
+          this.rebuildSubscription();
+        }
+      })
+      .catch((error: Error) => this.disconnect(error))
+      .finally(() => {
+        this.reconciling = null;
+        if (this.reconcileQueued) {
+          this.reconcileQueued = false;
+          void this.reconcile();
+        }
+      });
+    return this.reconciling;
+  }
+
+  private applyAgents(agents: readonly CodexAgent[]): void {
+    this.agents = new Map(agents.map((agent) => [agent.terminalId, agent]));
+    this.slotIds = assignStickySlots(
+      this.slotIds,
+      agents.map((agent) => ({
+        terminalId: agent.terminalId,
+        status: agent.status,
+        sequence: agent.sequence,
+      })),
+    );
+    this.options.onState({
+      online: true,
+      slots: this.slotIds.map((terminalId, index) => {
+        const agent = terminalId === null ? undefined : this.agents.get(terminalId);
+        return agent ? { ...agent, index } : null;
+      }),
+    });
+  }
+
+  private rebuildSubscription(): void {
+    if (this.stopped || this.rebuilding) return;
+    this.rebuilding = true;
+    this.subscriptionGeneration++;
+    this.closeSubscription?.();
+    this.closeSubscription = null;
+    void this.establish()
+      .catch((error: Error) => this.handleReconnectError(error))
+      .finally(() => {
+        this.rebuilding = false;
+      });
+  }
+
+  private disconnect(error: Error): void {
+    if (this.stopped || this.retryTimer) return;
+    this.subscriptionGeneration++;
+    this.closeSubscription?.();
+    this.closeSubscription = null;
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    this.reconcileTimer = null;
+    this.options.onState({
+      online: false,
+      slots: Array.from({ length: SLOT_COUNT }, () => null),
+    });
+    this.options.onError?.(error);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.establish().catch((nextError: Error) =>
+        this.handleReconnectError(nextError),
+      );
+    }, this.retryMs);
+  }
+
+  private handleReconnectError(error: Error): void {
+    if (error instanceof ProtocolVersionError) {
+      this.options.onError?.(error);
+      this.stop();
+      return;
+    }
+    this.disconnect(error);
+  }
+}
