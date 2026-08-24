@@ -12,6 +12,7 @@ import {
   stateLine,
   type SerialApi,
   type SerialConnection,
+  type UsbInputContext,
 } from "../src/index.js";
 import type { HerdrState, SlotState } from "../src/state.js";
 
@@ -113,12 +114,12 @@ test("selection ignores a wrong HELLO and refuses multiple verified devices", as
 
 test("USB CDC sends complete state, parses split events, and reconnects", async () => {
   const api = new MockSerialApi({ [A]: "HELLO ZERO-KB02 1" });
-  const messages: unknown[] = [];
+  const messages: { message: unknown; context: UsbInputContext }[] = [];
   const errors: Error[] = [];
   let generation = 40n;
   const usb = new UsbCdc({
     api,
-    onMessage: (message) => messages.push(message),
+    onMessage: (message, context) => messages.push({ message, context }),
     onError: (error) => errors.push(error),
     helloTimeoutMs: 50,
     retryMs: 2,
@@ -134,12 +135,16 @@ test("USB CDC sends complete state, parses split events, and reconnects", async 
   api.opened[1]!.port!.emitData("KEY 41 0 DO");
   api.opened[1]!.port!.emitData("WN\nJOY 41 LEFT\ninvalid\n");
   await until(() => messages.length === 2);
-  assert.deepEqual(messages, [
+  assert.deepEqual(messages.map(({ message }) => message), [
     { type: "key", generation: 41n, slot: 0, action: "DOWN" },
     { type: "joystick", generation: 41n, action: "LEFT" },
   ]);
+  assert.equal(messages[0]!.context.generation, 41n);
+  assert.equal(messages[0]!.context.state?.online, true);
+  assert.equal(messages[0]!.context.isCurrent(), true);
 
   usb.updateState(state("done"));
+  assert.equal(messages[0]!.context.isCurrent(), false);
   await until(() => api.opened[1]!.port!.recording.includes(Buffer.from("STATE 41 - DEEEEE\n")));
   await new Promise<void>((resolve) => api.opened[1]!.close(() => resolve()));
   await until(() => api.opened.length >= 4 && api.opened[3]!.port!.recording.includes(Buffer.from("STATE 42 - DEEEEE\n")));

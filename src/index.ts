@@ -1,3 +1,4 @@
+export * from "./bindings.js";
 export * from "./cdc.js";
 export * from "./herdr.js";
 export * from "./slots.js";

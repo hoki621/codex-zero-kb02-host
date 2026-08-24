@@ -104,7 +104,7 @@ function newGeneration(): bigint {
 }
 
 export interface UsbCdcOptions {
-  onMessage: (message: DeviceMessage) => void;
+  onMessage: (message: DeviceMessage, context: UsbInputContext) => void;
   onError?: (error: Error) => void;
   api?: SerialApi;
   portPath?: string;
@@ -113,6 +113,13 @@ export interface UsbCdcOptions {
   stateIntervalMs?: number;
   pongTimeoutMs?: number;
   generation?: () => bigint;
+}
+
+export interface UsbInputContext {
+  generation: bigint;
+  state: HerdrState | null;
+  isCurrent(): boolean;
+  retransmit(): void;
 }
 
 export class UsbCdc {
@@ -184,7 +191,19 @@ export class UsbCdc {
         this.pendingPing = null;
         this.pendingSince = 0;
       }
-      if (message) this.options.onMessage(message);
+      if (message) {
+        const generation = this.currentGeneration;
+        const state = this.state;
+        this.options.onMessage(message, {
+          generation,
+          state,
+          isCurrent: () =>
+            this.port === port &&
+            this.currentGeneration === generation &&
+            this.state === state,
+          retransmit: () => this.sendState(),
+        });
+      }
     });
     port.on("data", (data) => decoder.push(data));
     port.on("close", () => this.disconnected(new Error("ZERO-KB02 USB CDC disconnected")));
