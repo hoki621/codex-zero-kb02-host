@@ -36,33 +36,32 @@ export class LineDecoder {
   }
 }
 
-function generation(value: string | undefined): bigint | null {
-  if (!value || !/^\d+$/.test(value)) return null;
+function decimal(value: string | undefined, max: bigint): bigint | null {
+  if (!value || !/^(0|[1-9]\d*)$/.test(value)) return null;
   const parsed = BigInt(value);
-  return parsed > 0n && parsed <= 0xffff_ffff_ffff_ffffn ? parsed : null;
+  return parsed <= max ? parsed : null;
 }
 
-function uint32(value: string | undefined): number | null {
-  if (!value || !/^\d+$/.test(value)) return null;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed <= 0xffff_ffff ? parsed : null;
+function generation(value: string | undefined): bigint | null {
+  const parsed = decimal(value, 0xffff_ffff_ffff_ffffn);
+  return parsed !== null && parsed > 0n ? parsed : null;
 }
 
 export function parseDeviceMessage(line: string): DeviceMessage | null {
   if (line.trim() !== line || line.includes("  ") || /[^\x20-\x7e]/.test(line)) return null;
   const parts = line.split(" ");
   if (parts[0] === "PONG" && parts.length === 2) {
-    const sequence = uint32(parts[1]);
-    return sequence === null ? null : { type: "pong", sequence };
+    const sequence = decimal(parts[1], 0xffff_ffffn);
+    return sequence === null ? null : { type: "pong", sequence: Number(sequence) };
   }
 
   const currentGeneration = generation(parts[1]);
   if (currentGeneration === null) return null;
   if (parts[0] === "KEY" && parts.length === 4) {
-    const slot = Number(parts[2]);
+    const slot = decimal(parts[2], 5n);
     const action = parts[3];
-    return Number.isInteger(slot) && slot >= 0 && slot <= 5 && (action === "DOWN" || action === "UP")
-      ? { type: "key", generation: currentGeneration, slot, action }
+    return slot !== null && (action === "DOWN" || action === "UP")
+      ? { type: "key", generation: currentGeneration, slot: Number(slot), action }
       : null;
   }
   if (parts[0] === "ENC" && parts.length === 3) {

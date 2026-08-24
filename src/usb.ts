@@ -6,9 +6,9 @@ import type { HerdrState } from "./state.js";
 const HELLO_HOST = "HELLO HOST 1\n";
 const HELLO_DEVICE = "HELLO ZERO-KB02 1";
 const USB_MODEM = /^\/dev\/cu\.usbmodem/;
-const PONG_TIMEOUT_MS = 12_000;
 
 export const DEFAULT_STATE_INTERVAL_MS = 5_000;
+export const DEFAULT_PONG_TIMEOUT_MS = 12_000;
 
 export interface SerialConnection {
   readonly isOpen: boolean;
@@ -111,6 +111,7 @@ export interface UsbCdcOptions {
   helloTimeoutMs?: number;
   retryMs?: number;
   stateIntervalMs?: number;
+  pongTimeoutMs?: number;
   generation?: () => bigint;
 }
 
@@ -119,13 +120,15 @@ export class UsbCdc {
   private readonly helloTimeoutMs: number;
   private readonly retryMs: number;
   private readonly stateIntervalMs: number;
+  private readonly pongTimeoutMs: number;
   private readonly nextGeneration: () => bigint;
   private port: SerialConnection | null = null;
   private state: HerdrState | null = null;
   private mapping: string | null = null;
   private currentGeneration = 1n;
   private pingSequence = 0;
-  private lastPongAt = 0;
+  private pendingPing: number | null = null;
+  private pendingSince = 0;
   private timer: NodeJS.Timeout | null = null;
   private retryTimer: NodeJS.Timeout | null = null;
   private stopped = true;
@@ -135,6 +138,7 @@ export class UsbCdc {
     this.helloTimeoutMs = options.helloTimeoutMs ?? 1_000;
     this.retryMs = options.retryMs ?? 1_000;
     this.stateIntervalMs = options.stateIntervalMs ?? DEFAULT_STATE_INTERVAL_MS;
+    this.pongTimeoutMs = options.pongTimeoutMs ?? DEFAULT_PONG_TIMEOUT_MS;
     this.nextGeneration = options.generation ?? newGeneration;
   }
 
@@ -150,6 +154,8 @@ export class UsbCdc {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.timer = null;
     this.retryTimer = null;
+    this.pendingPing = null;
+    this.pendingSince = 0;
     const port = this.port;
     this.port = null;
     if (port) void close(port);
@@ -174,7 +180,10 @@ export class UsbCdc {
     }
     const decoder = new LineDecoder((line) => {
       const message = parseDeviceMessage(line);
-      if (message?.type === "pong") this.lastPongAt = Date.now();
+      if (message?.type === "pong" && message.sequence === this.pendingPing) {
+        this.pendingPing = null;
+        this.pendingSince = 0;
+      }
       if (message) this.options.onMessage(message);
     });
     port.on("data", (data) => decoder.push(data));
@@ -182,20 +191,25 @@ export class UsbCdc {
     port.on("error", (error) => this.disconnected(error));
     this.port = port;
     this.currentGeneration = this.nextGeneration();
-    this.lastPongAt = Date.now();
+    this.pendingPing = null;
+    this.pendingSince = 0;
     this.sendState();
     this.timer = setInterval(() => this.heartbeat(), this.stateIntervalMs);
   }
 
   private heartbeat(): void {
     if (!this.port) return;
-    if (Date.now() - this.lastPongAt >= PONG_TIMEOUT_MS) {
+    if (this.pendingPing !== null && Date.now() - this.pendingSince >= this.pongTimeoutMs) {
       this.disconnected(new Error("ZERO-KB02 USB CDC heartbeat timed out"));
       return;
     }
     this.sendState();
-    this.pingSequence = (this.pingSequence + 1) >>> 0;
-    void write(this.port, `PING ${this.pingSequence}\n`).catch((error: Error) => this.disconnected(error));
+    if (this.pendingPing === null) {
+      this.pingSequence = (this.pingSequence + 1) >>> 0;
+      this.pendingPing = this.pingSequence;
+      this.pendingSince = Date.now();
+    }
+    void write(this.port, `PING ${this.pendingPing}\n`).catch((error: Error) => this.disconnected(error));
   }
 
   private sendState(): void {
@@ -209,6 +223,8 @@ export class UsbCdc {
     this.timer = null;
     const port = this.port;
     this.port = null;
+    this.pendingPing = null;
+    this.pendingSince = 0;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       void this.connect().catch((nextError: Error) => this.disconnected(nextError));

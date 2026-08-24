@@ -87,6 +87,14 @@ test("device parser accepts only strict protocol events", () => {
   assert.deepEqual(parseDeviceMessage("JOY 7 LEFT"), { type: "joystick", generation: 7n, action: "LEFT" });
   assert.equal(parseDeviceMessage("KEY 7 6 DOWN"), null);
   assert.equal(parseDeviceMessage("KEY 7 0  DOWN"), null);
+  assert.equal(parseDeviceMessage("PONG 01"), null);
+  assert.equal(parseDeviceMessage("KEY 01 0 DOWN"), null);
+  assert.equal(parseDeviceMessage("KEY 7 00 DOWN"), null);
+  assert.equal(parseDeviceMessage("KEY 7 +0 DOWN"), null);
+  assert.equal(parseDeviceMessage("KEY 0 0 DOWN"), null);
+  assert.deepEqual(parseDeviceMessage("PONG 4294967295"), { type: "pong", sequence: 4_294_967_295 });
+  assert.equal(parseDeviceMessage("PONG 4294967296"), null);
+  assert.equal(parseDeviceMessage("KEY 18446744073709551616 0 DOWN"), null);
 });
 
 test("selection ignores a wrong HELLO and refuses multiple verified devices", async () => {
@@ -142,4 +150,48 @@ test("USB CDC sends complete state, parses split events, and reconnects", async 
 test("state formatter emits all six slots or OFFLINE", () => {
   assert.equal(stateLine(state(), 7n), "STATE 7 - WEEEEE");
   assert.equal(stateLine({ online: false, slots: [] }, 7n), "OFFLINE 7");
+});
+
+test("heartbeat ignores wrong PONG and accepts only the pending sequence", async () => {
+  const wrongApi = new MockSerialApi({ [A]: "HELLO ZERO-KB02 1" });
+  const wrong = new UsbCdc({
+    api: wrongApi,
+    onMessage: () => {},
+    helloTimeoutMs: 50,
+    retryMs: 2,
+    stateIntervalMs: 5,
+    pongTimeoutMs: 25,
+  });
+  await wrong.start();
+  wrongApi.opened[1]!.port!.emitData("PONG 1\n");
+  await until(() => wrongApi.opened[1]!.port!.recording.includes(Buffer.from("PING 1\n")));
+  wrongApi.opened[1]!.port!.emitData("PONG 2\n");
+  await until(() => wrongApi.opened.length >= 4);
+  wrong.stop();
+
+  const matchingApi = new MockSerialApi({ [A]: "HELLO ZERO-KB02 1" });
+  const matching = new UsbCdc({
+    api: matchingApi,
+    onMessage: () => {},
+    helloTimeoutMs: 50,
+    retryMs: 2,
+    stateIntervalMs: 5,
+    pongTimeoutMs: 25,
+  });
+  await matching.start();
+  const port = matchingApi.opened[1]!;
+  let acknowledged = 0;
+  const responder = setInterval(() => {
+    const sequences = [...port.port!.recording.toString().matchAll(/PING (\d+)\n/g)];
+    const latest = Number(sequences.at(-1)?.[1] ?? 0);
+    if (latest > acknowledged) {
+      acknowledged = latest;
+      port.port!.emitData(`PONG ${latest}\n`);
+    }
+  }, 1);
+  await delay(60);
+  clearInterval(responder);
+  assert.ok(acknowledged > 0);
+  assert.equal(matchingApi.opened.length, 2);
+  matching.stop();
 });
