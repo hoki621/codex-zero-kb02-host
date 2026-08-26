@@ -116,6 +116,7 @@ test("missing, disabled, duplicate, or mismatched plugins fail before open", asy
     ["missing", () => []],
     ["disabled", (root) => [plugin(root, { enabled: false })]],
     ["duplicate", (root) => [plugin(root), plugin(root)]],
+    ["foreign extra", (root) => [plugin(root), { plugin_id: "foreign.plugin" }]],
     ["mismatched pane", (root) => [plugin(root, { panes: [] })]],
   ];
   for (const [name, entries] of cases) {

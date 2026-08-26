@@ -26,6 +26,82 @@ function socketIdentity(socketPath: string): string | null {
   return stat ? `${stat.dev}:${stat.ino}` : null;
 }
 
+function removeUnchangedSocket(socketPath: string, expected: string): boolean {
+  if (socketIdentity(socketPath) !== expected) return false;
+  fs.rmSync(socketPath);
+  return true;
+}
+
+function isStatusPayload(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const payload = value as Record<string, unknown>;
+  if (
+    payload.version !== 1 ||
+    typeof payload.online !== "boolean" ||
+    !Array.isArray(payload.slots) ||
+    payload.slots.length !== 6
+  ) return false;
+  const slotsValid = payload.slots.every((raw, index) => {
+    if (raw === null) return true;
+    if (typeof raw !== "object") return false;
+    const slot = raw as Record<string, unknown>;
+    return slot.index === index &&
+      typeof slot.terminalId === "string" &&
+      typeof slot.paneId === "string" &&
+      typeof slot.workspaceId === "string" &&
+      typeof slot.tabId === "string" &&
+      typeof slot.status === "string" &&
+      ["idle", "working", "blocked", "done", "unknown"].includes(slot.status) &&
+      typeof slot.sequence === "number" &&
+      Number.isSafeInteger(slot.sequence) &&
+      slot.sequence >= 0;
+  });
+  return slotsValid && (payload.online || payload.slots.every((slot) => slot === null));
+}
+
+function probeStatusSocket(socketPath: string): Promise<"live" | "stale" | "ambiguous"> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    let connected = false;
+    let buffer = "";
+    let settled = false;
+    const finish = (result: "live" | "stale" | "ambiguous") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish("ambiguous"), 250);
+    socket.setEncoding("utf8");
+    socket.once("connect", () => {
+      connected = true;
+      socket.write('{"cmd":"watch"}\n');
+    });
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) {
+        if (buffer.length > 64 * 1024) finish("ambiguous");
+        return;
+      }
+      try {
+        finish(isStatusPayload(JSON.parse(buffer.slice(0, newline))) ? "live" : "ambiguous");
+      } catch {
+        finish("ambiguous");
+      }
+    });
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      finish(
+        !connected && ["ECONNREFUSED", "ENOENT", "ENOTSOCK"].includes(error.code ?? "")
+          ? "stale"
+          : "ambiguous",
+      );
+    });
+    socket.once("close", () => finish("ambiguous"));
+  });
+}
+
 export class StatusPublisher {
   private server: net.Server | null = null;
   private clients = new Set<net.Socket>();
@@ -50,10 +126,10 @@ export class StatusPublisher {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     fs.chmodSync(directory, 0o700);
 
-    const server = net.createServer((socket) => this.accept(socket));
+    let server = net.createServer((socket) => this.accept(socket));
     this.server = server;
     try {
-      await new Promise<void>((resolve, reject) => {
+      const listen = () => new Promise<void>((resolve, reject) => {
         const onError = (error: Error) => {
           server.off("listening", onListening);
           reject(error);
@@ -66,6 +142,23 @@ export class StatusPublisher {
         server.once("listening", onListening);
         server.listen(this.socketPath);
       });
+      try {
+        await listen();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+        const identity = socketIdentity(this.socketPath);
+        const probe = await probeStatusSocket(this.socketPath);
+        if (
+          probe !== "stale" ||
+          identity === null ||
+          !removeUnchangedSocket(this.socketPath, identity)
+        ) {
+          throw error;
+        }
+        server = net.createServer((socket) => this.accept(socket));
+        this.server = server;
+        await listen();
+      }
       fs.chmodSync(this.socketPath, 0o600);
       this.identity = socketIdentity(this.socketPath);
     } catch (error) {

@@ -108,28 +108,28 @@ function exactPlugin(
   if (result.type !== "plugin_list" || !Array.isArray(result.plugins)) {
     return false;
   }
-  const matches = result.plugins.filter(
-    (value): value is Record<string, unknown> =>
-      typeof value === "object" &&
-      value !== null &&
-      (value as Record<string, unknown>).plugin_id === PLUGIN_ID,
-  );
-  if (matches.length !== 1) return false;
-  const plugin = matches[0]!;
-  const source = plugin.source as Record<string, unknown> | undefined;
-  const panes = plugin.panes;
-  const build = plugin.build;
+  if (result.plugins.length !== 1) return false;
+  const plugin = result.plugins[0];
   if (
-    plugin.name !== PLUGIN_NAME ||
-    plugin.version !== PLUGIN_VERSION ||
-    plugin.min_herdr_version !== MIN_HERDR_VERSION ||
-    plugin.enabled !== true ||
+    typeof plugin !== "object" ||
+    plugin === null ||
+    (plugin as Record<string, unknown>).plugin_id !== PLUGIN_ID
+  ) return false;
+  const exact = plugin as Record<string, unknown>;
+  const source = exact.source as Record<string, unknown> | undefined;
+  const panes = exact.panes;
+  const build = exact.build;
+  if (
+    exact.name !== PLUGIN_NAME ||
+    exact.version !== PLUGIN_VERSION ||
+    exact.min_herdr_version !== MIN_HERDR_VERSION ||
+    exact.enabled !== true ||
     source?.kind !== "local" ||
-    !Array.isArray(plugin.warnings) ||
-    plugin.warnings.length !== 0 ||
-    !Array.isArray(plugin.platforms) ||
-    plugin.platforms.length !== 1 ||
-    plugin.platforms[0] !== "macos" ||
+    !Array.isArray(exact.warnings) ||
+    exact.warnings.length !== 0 ||
+    !Array.isArray(exact.platforms) ||
+    exact.platforms.length !== 1 ||
+    exact.platforms[0] !== "macos" ||
     !Array.isArray(build) ||
     build.length !== 2 ||
     !sameCommand((build[0] as Record<string, unknown>)?.command, ["npm", "ci"]) ||
@@ -153,13 +153,13 @@ function exactPlugin(
   try {
     const expectedRoot = fs.realpathSync(hostRoot);
     return (
-      typeof plugin.plugin_root === "string" &&
-      fs.realpathSync(plugin.plugin_root) === expectedRoot &&
-      typeof plugin.manifest_path === "string" &&
-      fs.realpathSync(plugin.manifest_path) ===
+      typeof exact.plugin_root === "string" &&
+      fs.realpathSync(exact.plugin_root) === expectedRoot &&
+      typeof exact.manifest_path === "string" &&
+      fs.realpathSync(exact.manifest_path) ===
         fs.realpathSync(path.join(expectedRoot, "herdr-plugin.toml")) &&
       ["actions", "events", "link_handlers", "startup"].every((field) => {
-        const value = plugin[field];
+        const value = exact[field];
         return value === undefined || (Array.isArray(value) && value.length === 0);
       })
     );

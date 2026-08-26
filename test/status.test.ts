@@ -94,6 +94,71 @@ test("status socket rejects commands other than the exact watch line", async (t)
   await publisher.stop();
 });
 
+test("status socket preserves a live owner and recovers an unreachable stale path", async (t) => {
+  const socketPath = fixture(t);
+  const owner = new StatusPublisher(socketPath);
+  owner.update(state());
+  await owner.start();
+  const identity = `${fs.statSync(socketPath).dev}:${fs.statSync(socketPath).ino}`;
+  const contender = new StatusPublisher(socketPath);
+  await assert.rejects(contender.start(), { code: "EADDRINUSE" });
+  assert.equal(`${fs.statSync(socketPath).dev}:${fs.statSync(socketPath).ino}`, identity);
+
+  const socket = net.createConnection(socketPath);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  const nextLine = lineReader(socket);
+  socket.write('{"cmd":"watch"}\n');
+  assert.equal(parseStatus(await nextLine())?.slots[0]?.terminalId, "agent-1");
+  socket.destroy();
+  await owner.stop();
+
+  fs.writeFileSync(socketPath, "stale");
+  const recovered = new StatusPublisher(socketPath);
+  await recovered.start();
+  assert.equal(fs.statSync(socketPath).isSocket(), true);
+  await recovered.stop();
+});
+
+test("status socket fails closed on probe timeout or identity replacement", async (t) => {
+  const socketPath = fixture(t);
+  const silentClients = new Set<net.Socket>();
+  const silent = net.createServer((socket) => {
+    silentClients.add(socket);
+    socket.once("close", () => silentClients.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    silent.once("listening", resolve);
+    silent.once("error", reject);
+    silent.listen(socketPath);
+  });
+  const identity = `${fs.statSync(socketPath).dev}:${fs.statSync(socketPath).ino}`;
+  await assert.rejects(new StatusPublisher(socketPath).start(), { code: "EADDRINUSE" });
+  assert.equal(`${fs.statSync(socketPath).dev}:${fs.statSync(socketPath).ino}`, identity);
+  for (const socket of silentClients) socket.destroy();
+  await new Promise<void>((resolve) => silent.close(() => resolve()));
+
+  fs.writeFileSync(socketPath, "stale");
+  const replacement = `${socketPath}.replacement`;
+  fs.writeFileSync(replacement, "replacement");
+  const originalStatSync = fs.statSync;
+  let socketReads = 0;
+  const statMock = t.mock.method(fs, "statSync", (target: fs.PathLike, options?: fs.StatSyncOptions) => {
+    if (target === socketPath && ++socketReads === 2) {
+      fs.renameSync(replacement, socketPath);
+    }
+    return originalStatSync(target, options as fs.StatSyncOptions);
+  });
+  try {
+    await assert.rejects(new StatusPublisher(socketPath).start(), { code: "EADDRINUSE" });
+  } finally {
+    statMock.mock.restore();
+  }
+  assert.equal(fs.readFileSync(socketPath, "utf8"), "replacement");
+});
+
 test("popup validates snapshots, sanitizes text, and exits on daemon EOF", async (t) => {
   const clean = state();
   const malicious: HerdrState = {
