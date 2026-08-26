@@ -153,6 +153,11 @@ test("focus and generation races do not create an ownership record", async (t) =
     { ...context(), retransmit: () => retransmits++ },
   ), false);
   assert.equal(retransmits, 1);
+  assert.equal(await controller.handle(
+    down,
+    { ...context(), state: { online: false, slots: [] }, retransmit: () => retransmits++ },
+  ), false);
+  assert.equal(retransmits, 2);
 });
 
 test("invalid open and failed targeted close lock without replacement open", async (t) => {

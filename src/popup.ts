@@ -233,21 +233,18 @@ export class PopupController {
     message: DeviceMessage,
     context: UsbInputContext,
   ): Promise<boolean> {
+    const staleContext =
+      message.type === "popup" &&
+      (message.generation !== context.generation || !context.state?.online);
+    if (staleContext) context.retransmit();
     if (
       message.type !== "popup" ||
       message.action !== "DOWN" ||
-      message.generation !== context.generation ||
-      !context.state?.online ||
+      staleContext ||
       !this.herdrOnline ||
       this.phase === "stale" ||
       this.busy
     ) {
-      if (
-        message.type === "popup" &&
-        message.generation !== context.generation
-      ) {
-        context.retransmit();
-      }
       return false;
     }
     this.busy = true;
