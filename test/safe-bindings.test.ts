@@ -137,6 +137,7 @@ test("K1 Escape rejects unsafe focus, identity, mapping, and final recheck state
     { name: "non-Codex focus", agents: [{ agent: "claude", terminal_id: "terminal-0", pane_id: "focused-pane" }] },
     { name: "empty terminal id", agents: [{ agent: "codex", terminal_id: "", pane_id: "focused-pane" }] },
     { name: "duplicate focused Codex agents", agents: [agent(0, "focused-pane"), agent(1, "focused-pane")] },
+    { name: "duplicate terminal identity across panes", agents: [agent(0, "focused-pane"), agent(0, "other-pane")] },
     { name: "agent outside slot mapping", agents: [{ agent: "codex", terminal_id: "other", pane_id: "focused-pane" }] },
     { name: "duplicate slot mapping", agents: [agent(0, "focused-pane")], state: online([slot(0), slot(0), null, null, null, null]) },
     { name: "focus changed", agents: [agent(0, "focused-pane")], panes: ["focused-pane", "other-pane"] },

@@ -16,7 +16,11 @@ function focusedCodexAgent(agents: readonly RawAgent[], paneId: string): RawAgen
   const matches = agents.filter((agent) => agent.agent === "codex" && agent.pane_id === paneId);
   if (matches.length !== 1) return null;
   const terminalId = matches[0]!.terminal_id;
-  return typeof terminalId === "string" && terminalId.length > 0 ? matches[0]! : null;
+  if (typeof terminalId !== "string" || terminalId.length === 0) return null;
+  const identities = agents.filter(
+    (agent) => agent.agent === "codex" && agent.terminal_id === terminalId,
+  );
+  return identities.length === 1 ? matches[0]! : null;
 }
 
 function liveAgent(agents: readonly RawAgent[], terminalId: string): RawAgent | null {
