@@ -5,7 +5,7 @@ import { UsbCdc } from "./usb.js";
 
 const socketPath = process.env.HERDR_SOCKET_PATH;
 if (!socketPath) {
-  throw new Error("HERDR_SOCKET_PATH is required; run the host inside Herdr");
+  throw new Error("HERDR_SOCKET_PATH is required; set it to the Herdr socket");
 }
 
 const report = (source: string, error: Error) => {
