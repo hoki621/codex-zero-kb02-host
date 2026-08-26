@@ -1,14 +1,15 @@
 # Third-party notices
 
-`src/socket.ts`, `src/herdr.ts`, and `src/slots.ts` adapt the socket,
-subscription, and sticky-slot implementation from House of Herdr's Codex Micro
-package:
+`src/socket.ts`, `src/herdr.ts`, `src/slots.ts`, and `src/status.ts` adapt the
+socket, subscription, sticky-slot, and owned Unix-socket lifecycle patterns
+from House of Herdr's Codex Micro package:
 
 - Repository: <https://github.com/alasano/house-of-herdr>
 - Fixed commit: `50b24e3f334a38a84bfa356f154d49835dff2499`
 - Source paths: `packages/codex-micro/src/socket.ts`,
-  `packages/codex-micro/src/herdr.ts`, and
-  `packages/codex-micro/src/slots.ts`
+  `packages/codex-micro/src/herdr.ts`,
+  `packages/codex-micro/src/slots.ts`, and
+  `packages/codex-micro/src/control.ts`
 
 MIT License
 

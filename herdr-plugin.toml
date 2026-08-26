@@ -1,0 +1,19 @@
+id = "hoki621.zero-kb02"
+name = "zero-kb02 Status"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+platforms = ["macos"]
+
+[[build]]
+command = ["npm", "ci"]
+
+[[build]]
+command = ["npm", "run", "build"]
+
+[[panes]]
+id = "status"
+title = "zero-kb02 status"
+placement = "popup"
+width = 160
+height = 22
+command = ["node", "dist/src/status-popup.js"]
