@@ -34,7 +34,7 @@ If more than one does, set `ZERO_KB02_PORT` to the intended path.
 
 | Physical key | CDC event | Host action |
 | --- | --- | --- |
-| K1 | unavailable | reserved; Escape not implemented |
+| K1 | `ESC <generation> DOWN` | send Escape to the focused mapped Codex pane |
 | K2 | `KEY <generation> 0 DOWN` | focus agent slot 0 |
 | K3 | `KEY <generation> 1 DOWN` | focus agent slot 1 |
 | K4 | unavailable | reserved; Popup not implemented |
@@ -44,4 +44,4 @@ If more than one does, set `ZERO_KB02_PORT` to the intended path.
 | K8 | `KEY <generation> 5 DOWN` | focus agent slot 5 |
 | K9–K12 | unavailable | reserved; no operation |
 
-`KEY UP`, `ENC`, `JOY`, and joystick push perform no operation in v1.
+`ESC UP`, `KEY UP`, `ENC`, `JOY`, and joystick push perform no operation in v1.

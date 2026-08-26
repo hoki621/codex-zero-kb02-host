@@ -4,6 +4,21 @@ import type { UsbInputContext } from "./usb.js";
 
 type FocusClient = Pick<HerdrClient, "agentList" | "request">;
 
+function currentPaneId(result: Record<string, unknown>): string | null {
+  if (result.type !== "pane_current" || typeof result.pane !== "object" || result.pane === null) {
+    return null;
+  }
+  const paneId = (result.pane as Record<string, unknown>).pane_id;
+  return typeof paneId === "string" && paneId.length > 0 ? paneId : null;
+}
+
+function focusedCodexAgent(agents: readonly RawAgent[], paneId: string): RawAgent | null {
+  const matches = agents.filter((agent) => agent.agent === "codex" && agent.pane_id === paneId);
+  if (matches.length !== 1) return null;
+  const terminalId = matches[0]!.terminal_id;
+  return typeof terminalId === "string" && terminalId.length > 0 ? matches[0]! : null;
+}
+
 function liveAgent(agents: readonly RawAgent[], terminalId: string): RawAgent | null {
   const matches = agents.filter(
     (agent) =>
@@ -23,6 +38,21 @@ export class SafeBindings {
     if (message.generation !== context.generation || !context.state?.online) {
       context.retransmit();
       return false;
+    }
+    if (message.type === "escape") {
+      if (message.action !== "DOWN") return false;
+      const paneId = currentPaneId(await this.herdr.request("pane.current", {}));
+      if (!paneId) return false;
+      const agent = focusedCodexAgent(await this.herdr.agentList(), paneId);
+      if (!agent) return false;
+      const terminalId = agent.terminal_id as string;
+      if (context.state.slots.filter((slot) => slot?.terminalId === terminalId).length !== 1) {
+        return false;
+      }
+      const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
+      if (finalPaneId !== paneId || !context.isCurrent()) return false;
+      await this.herdr.request("agent.send_keys", { target: paneId, keys: ["esc"] });
+      return true;
     }
     if (message.type !== "key" || message.action !== "DOWN") return false;
 

@@ -83,6 +83,7 @@ test("bounded decoder restores split/multiple lines and drops invalid or oversiz
 });
 
 test("device parser accepts only strict protocol events", () => {
+  assert.deepEqual(parseDeviceMessage("ESC 7 DOWN"), { type: "escape", generation: 7n, action: "DOWN" });
   assert.deepEqual(parseDeviceMessage("KEY 7 5 UP"), { type: "key", generation: 7n, slot: 5, action: "UP" });
   assert.deepEqual(parseDeviceMessage("ENC 7 CCW"), { type: "encoder", generation: 7n, action: "CCW" });
   assert.deepEqual(parseDeviceMessage("JOY 7 LEFT"), { type: "joystick", generation: 7n, action: "LEFT" });
@@ -92,6 +93,10 @@ test("device parser accepts only strict protocol events", () => {
   assert.equal(parseDeviceMessage("KEY 01 0 DOWN"), null);
   assert.equal(parseDeviceMessage("KEY 7 00 DOWN"), null);
   assert.equal(parseDeviceMessage("KEY 7 +0 DOWN"), null);
+  assert.equal(parseDeviceMessage("ESC 0 DOWN"), null);
+  assert.equal(parseDeviceMessage("ESC 01 DOWN"), null);
+  assert.equal(parseDeviceMessage("ESC 7 down"), null);
+  assert.equal(parseDeviceMessage("ESC 7 DOWN extra"), null);
   assert.equal(parseDeviceMessage("KEY 0 0 DOWN"), null);
   assert.deepEqual(parseDeviceMessage("PONG 4294967295"), { type: "pong", sequence: 4_294_967_295 });
   assert.equal(parseDeviceMessage("PONG 4294967296"), null);
@@ -133,10 +138,11 @@ test("USB CDC sends complete state, parses split events, and reconnects", async 
   assert.match(api.opened[1]!.port!.recording.toString(), /PING \d+\n/);
 
   api.opened[1]!.port!.emitData("KEY 41 0 DO");
-  api.opened[1]!.port!.emitData("WN\nJOY 41 LEFT\ninvalid\n");
-  await until(() => messages.length === 2);
+  api.opened[1]!.port!.emitData("WN\nESC 41 DOWN\nJOY 41 LEFT\ninvalid\n");
+  await until(() => messages.length === 3);
   assert.deepEqual(messages.map(({ message }) => message), [
     { type: "key", generation: 41n, slot: 0, action: "DOWN" },
+    { type: "escape", generation: 41n, action: "DOWN" },
     { type: "joystick", generation: 41n, action: "LEFT" },
   ]);
   assert.equal(messages[0]!.context.generation, 41n);

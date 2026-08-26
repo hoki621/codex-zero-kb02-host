@@ -4,6 +4,7 @@ export const MAX_LINE_BYTES = 128;
 
 export type DeviceMessage =
   | { type: "pong"; sequence: number }
+  | { type: "escape"; generation: bigint; action: "DOWN" | "UP" }
   | { type: "key"; generation: bigint; slot: number; action: "DOWN" | "UP" }
   | { type: "encoder"; generation: bigint; action: "CW" | "CCW" | "DOWN" | "UP" }
   | { type: "joystick"; generation: bigint; action: "UP" | "DOWN" | "LEFT" | "RIGHT" };
@@ -57,6 +58,12 @@ export function parseDeviceMessage(line: string): DeviceMessage | null {
 
   const currentGeneration = generation(parts[1]);
   if (currentGeneration === null) return null;
+  if (parts[0] === "ESC" && parts.length === 3) {
+    const action = parts[2];
+    return action === "DOWN" || action === "UP"
+      ? { type: "escape", generation: currentGeneration, action }
+      : null;
+  }
   if (parts[0] === "KEY" && parts.length === 4) {
     const slot = decimal(parts[2], 5n);
     const action = parts[3];
