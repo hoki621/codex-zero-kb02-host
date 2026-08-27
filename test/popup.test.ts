@@ -80,7 +80,11 @@ test("K4 opens the exact plugin and closes only its returned pane id", async (t)
   const { root, record } = fixture(t);
   const herdr = new FakeHerdr((method) => {
     if (method === "pane.current") return currentPane();
-    if (method === "plugin.list") return { type: "plugin_list", plugins: [plugin(root)] };
+    if (method === "plugin.list") {
+      const exact = plugin(root);
+      Reflect.deleteProperty(exact, "warnings");
+      return { type: "plugin_list", plugins: [exact] };
+    }
     if (method === "plugin.pane.open") return opened();
     if (method === "plugin.pane.close") return { type: "plugin_pane_closed", pane_id: "owned" };
     throw new Error(`unexpected ${method}`);

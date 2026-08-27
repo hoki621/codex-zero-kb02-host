@@ -125,8 +125,8 @@ function exactPlugin(
     exact.min_herdr_version !== MIN_HERDR_VERSION ||
     exact.enabled !== true ||
     source?.kind !== "local" ||
-    !Array.isArray(exact.warnings) ||
-    exact.warnings.length !== 0 ||
+    (exact.warnings !== undefined &&
+      (!Array.isArray(exact.warnings) || exact.warnings.length !== 0)) ||
     !Array.isArray(exact.platforms) ||
     exact.platforms.length !== 1 ||
     exact.platforms[0] !== "macos" ||
