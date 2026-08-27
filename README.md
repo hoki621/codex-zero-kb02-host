@@ -53,13 +53,14 @@ If more than one does, set `ZERO_KB02_PORT` to the intended path.
 | K6 | `KEY <generation> 3 DOWN` | focus agent slot 3 |
 | K7 | `KEY <generation> 4 DOWN` | focus agent slot 4 |
 | K8 | `KEY <generation> 5 DOWN` | focus agent slot 5 |
-| K9–K12 | unavailable | reserved; no operation |
+| K9–K11 | unavailable | reserved; no operation |
+| K12 | `NEW <generation> DOWN` | send fixed `/new` to the focused mapped Codex pane |
 
 Encoder `CW` raises the focused managed Codex CLI thread's reasoning effort by
 one supported level; `CCW` lowers it by one. Both clamp at the model's endpoint.
 
-`ESC UP`, `POPUP UP`, `KEY UP`, Encoder `DOWN/UP`, `JOY`, and joystick push
-perform no operation in v1. K4 first calls global `popup.close`; only exact
+`ESC UP`, `POPUP UP`, `KEY UP`, `NEW UP`, Encoder `DOWN/UP`, `JOY`, and joystick
+push perform no operation in v1. K4 first calls global `popup.close`; only exact
 `popup_not_open` opens the fixed read-only `hoki621.zero-kb02` `status` popup.
 Because Herdr 0.8.2 exposes one session-wide popup without public ownership,
 K4 can close another plugin's active popup. The bridge tracks no popup pane ID

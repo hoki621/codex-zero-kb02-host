@@ -43,7 +43,7 @@ export class SafeBindings {
       context.retransmit();
       return false;
     }
-    if (message.type === "escape") {
+    if (message.type === "escape" || message.type === "newChat") {
       if (message.action !== "DOWN") return false;
       const paneId = currentPaneId(await this.herdr.request("pane.current", {}));
       if (!paneId) return false;
@@ -55,7 +55,8 @@ export class SafeBindings {
       }
       const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
       if (finalPaneId !== paneId || !context.isCurrent()) return false;
-      await this.herdr.request("agent.send_keys", { target: paneId, keys: ["esc"] });
+      const keys = message.type === "escape" ? ["esc"] : ["/", "n", "e", "w", "enter"];
+      await this.herdr.request("agent.send_keys", { target: paneId, keys });
       return true;
     }
     if (message.type !== "key" || message.action !== "DOWN") return false;

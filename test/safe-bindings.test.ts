@@ -97,7 +97,31 @@ test("K1 Escape uses focused mapped Codex pane and a final focus recheck", async
   ]);
 });
 
-test("stale, offline, empty, UP, ENC, and JOY inputs perform no operation", async () => {
+test("K12 New Chat sends only the fixed command to the focused mapped Codex pane", async () => {
+  const calls: { method: string; params: Record<string, unknown> }[] = [];
+  const herdr = {
+    agentList: async () => [agent(0, "focused-pane"), agent(1, "other-pane")],
+    request: async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params });
+      return method === "pane.current"
+        ? { type: "pane_current", pane: { pane_id: "focused-pane" } }
+        : {};
+    },
+  };
+  const router = new SafeBindings(herdr);
+
+  assert.equal(await router.handle(parsed("NEW 7 DOWN"), inputContext(online()).context), true);
+  assert.deepEqual(calls, [
+    { method: "pane.current", params: {} },
+    { method: "pane.current", params: {} },
+    { method: "agent.send_keys", params: {
+      target: "focused-pane",
+      keys: ["/", "n", "e", "w", "enter"],
+    } },
+  ]);
+});
+
+test("stale, offline, empty, UP, NEW UP, ENC, and JOY inputs perform no operation", async () => {
   let lists = 0;
   const requests: string[] = [];
   const router = new SafeBindings({
@@ -107,24 +131,27 @@ test("stale, offline, empty, UP, ENC, and JOY inputs perform no operation", asyn
   const current = inputContext(online());
   assert.equal(await router.handle(parsed("KEY 6 0 DOWN"), current.context), false);
   assert.equal(await router.handle(parsed("ESC 6 DOWN"), current.context), false);
-  assert.equal(current.retransmits(), 2);
+  assert.equal(await router.handle(parsed("NEW 6 DOWN"), current.context), false);
+  assert.equal(current.retransmits(), 3);
 
   const offline = inputContext({ online: false, slots: [] });
   assert.equal(await router.handle(parsed("KEY 7 0 DOWN"), offline.context), false);
   assert.equal(await router.handle(parsed("ESC 7 DOWN"), offline.context), false);
-  assert.equal(offline.retransmits(), 2);
+  assert.equal(await router.handle(parsed("NEW 7 DOWN"), offline.context), false);
+  assert.equal(offline.retransmits(), 3);
 
   const empty = inputContext(online([null, null, null, null, null, null]));
   assert.equal(await router.handle(parsed("KEY 7 0 DOWN"), empty.context), false);
   assert.equal(await router.handle(parsed("KEY 7 0 UP"), current.context), false);
   assert.equal(await router.handle(parsed("ESC 7 UP"), current.context), false);
+  assert.equal(await router.handle(parsed("NEW 7 UP"), current.context), false);
   assert.equal(await router.handle(parsed("ENC 7 CW"), current.context), false);
   assert.equal(await router.handle(parsed("JOY 7 LEFT"), current.context), false);
   assert.equal(lists, 0);
   assert.deepEqual(requests, []);
 });
 
-test("K1 Escape rejects unsafe focus, identity, mapping, and final recheck states", async () => {
+test("K1 Escape and K12 New Chat reject unsafe focus, identity, mapping, and final recheck states", async () => {
   const cases: {
     name: string;
     agents: RawAgent[];
@@ -144,24 +171,26 @@ test("K1 Escape rejects unsafe focus, identity, mapping, and final recheck state
     { name: "mapping invalidated", agents: [agent(0, "focused-pane")], invalidateBeforeFinal: true },
   ];
 
-  for (const testCase of cases) {
-    const sent: string[] = [];
-    const current = inputContext(testCase.state ?? online());
-    let paneRead = 0;
-    const router = new SafeBindings({
-      agentList: async () => testCase.agents,
-      request: async (method: string) => {
-        if (method === "agent.send_keys") {
-          sent.push(method);
-          return {};
-        }
-        if (testCase.invalidateBeforeFinal && paneRead === 1) current.invalidate();
-        const paneId = (testCase.panes ?? ["focused-pane", "focused-pane"])[paneRead++] ?? null;
-        return { type: "pane_current", pane: paneId === null ? null : { pane_id: paneId } };
-      },
-    });
-    assert.equal(await router.handle(parsed("ESC 7 DOWN"), current.context), false, testCase.name);
-    assert.deepEqual(sent, [], testCase.name);
+  for (const line of ["ESC 7 DOWN", "NEW 7 DOWN"]) {
+    for (const testCase of cases) {
+      const sent: string[] = [];
+      const current = inputContext(testCase.state ?? online());
+      let paneRead = 0;
+      const router = new SafeBindings({
+        agentList: async () => testCase.agents,
+        request: async (method: string) => {
+          if (method === "agent.send_keys") {
+            sent.push(method);
+            return {};
+          }
+          if (testCase.invalidateBeforeFinal && paneRead === 1) current.invalidate();
+          const paneId = (testCase.panes ?? ["focused-pane", "focused-pane"])[paneRead++] ?? null;
+          return { type: "pane_current", pane: paneId === null ? null : { pane_id: paneId } };
+        },
+      });
+      assert.equal(await router.handle(parsed(line), current.context), false, `${line}: ${testCase.name}`);
+      assert.deepEqual(sent, [], `${line}: ${testCase.name}`);
+    }
   }
 });
 

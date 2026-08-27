@@ -6,6 +6,7 @@ export type DeviceMessage =
   | { type: "pong"; sequence: number }
   | { type: "escape"; generation: bigint; action: "DOWN" | "UP" }
   | { type: "popup"; generation: bigint; action: "DOWN" | "UP" }
+  | { type: "newChat"; generation: bigint; action: "DOWN" | "UP" }
   | { type: "key"; generation: bigint; slot: number; action: "DOWN" | "UP" }
   | { type: "encoder"; generation: bigint; action: "CW" | "CCW" | "DOWN" | "UP" }
   | { type: "joystick"; generation: bigint; action: "UP" | "DOWN" | "LEFT" | "RIGHT" };
@@ -69,6 +70,12 @@ export function parseDeviceMessage(line: string): DeviceMessage | null {
     const action = parts[2];
     return action === "DOWN" || action === "UP"
       ? { type: "popup", generation: currentGeneration, action }
+      : null;
+  }
+  if (parts[0] === "NEW" && parts.length === 3) {
+    const action = parts[2];
+    return action === "DOWN" || action === "UP"
+      ? { type: "newChat", generation: currentGeneration, action }
       : null;
   }
   if (parts[0] === "KEY" && parts.length === 4) {
