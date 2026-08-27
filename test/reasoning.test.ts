@@ -38,7 +38,7 @@ function managed(paneId = "focused") {
   return {
     agent: "codex",
     pane_id: paneId,
-    agent_session: { source: "managed", agent: "codex", kind: "id", value: THREAD },
+    agent_session: { source: "herdr:codex", agent: "codex", kind: "id", value: THREAD },
   };
 }
 
@@ -98,6 +98,10 @@ test("ENC fails closed for stale, offline, non-rotation, ambiguous, and raced in
 
   agents = [{ agent: "codex", pane_id: "focused" }];
   assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
+  for (const source of ["managed", 1]) {
+    agents = [{ ...managed(), agent_session: { ...managed().agent_session, source } }];
+    assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
+  }
   agents = [managed(), managed()];
   assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
   agents = [managed()];
@@ -184,14 +188,13 @@ async function fakeAppServer(
 function response(request: Rpc, effort = "medium", version = "0.149.1") {
   switch (request.method) {
     case "initialize": return { platformOs: "macos", userAgent: `codex-cli/${version}` };
-    case "thread/loaded/list": return { data: [THREAD], nextCursor: null };
+    case "thread/loaded/list": return { data: [THREAD] };
     case "thread/resume": return { thread: { id: THREAD }, model: "gpt-5.6", reasoningEffort: effort };
     case "model/list": return {
       data: [{
         id: "gpt-5.6", model: "gpt-5.6",
         supportedReasoningEfforts: ["low", "medium", "high"].map((reasoningEffort) => ({ reasoningEffort })),
       }],
-      nextCursor: null,
     };
     case "thread/settings/update": return {};
     default: throw new Error(`unexpected ${request.method}`);
@@ -230,4 +233,18 @@ test("App Server version mismatch and unavailable endpoint fail before update", 
   await assert.rejects(
     new CodexAppServer(path.join(os.tmpdir(), "zero-kb02-missing.sock")).changeEffort(THREAD, "CW", async () => true),
   );
+});
+
+test("App Server rejects pagination cursors from loaded threads and models", async () => {
+  for (const paginatedMethod of ["thread/loaded/list", "model/list"]) {
+    const server = await fakeAppServer((request) => request.method === paginatedMethod
+      ? { ...response(request), nextCursor: "more" }
+      : response(request));
+    try {
+      assert.equal(await new CodexAppServer(server.path).changeEffort(THREAD, "CW", async () => true), false);
+      assert.equal(server.requests.some(({ method }) => method === "thread/settings/update"), false);
+    } finally {
+      await server.close();
+    }
+  }
 });

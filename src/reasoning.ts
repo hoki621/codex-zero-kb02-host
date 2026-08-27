@@ -257,7 +257,7 @@ export class CodexAppServer {
       if (
         !Array.isArray(loaded.data) ||
         loaded.data.filter((id) => id === threadId).length !== 1 ||
-        loaded.nextCursor !== null
+        loaded.nextCursor != null
       ) {
         return false;
       }
@@ -277,7 +277,7 @@ export class CodexAppServer {
         limit: 100,
         includeHidden: true,
       });
-      if (!Array.isArray(models.data) || models.nextCursor !== null) return false;
+      if (!Array.isArray(models.data) || models.nextCursor != null) return false;
       const matches = models.data
         .map(object)
         .filter((model): model is JsonObject =>
@@ -330,8 +330,7 @@ function managedThreadId(agents: readonly RawAgent[], paneId: string): string | 
   const session = object(matches[0]!.agent_session);
   const threadId = session?.value;
   if (
-    typeof session?.source !== "string" ||
-    session.source.length === 0 ||
+    session?.source !== "herdr:codex" ||
     session?.agent !== "codex" ||
     session.kind !== "id" ||
     typeof threadId !== "string" ||
