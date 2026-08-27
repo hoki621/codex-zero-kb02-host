@@ -7,6 +7,8 @@ export type DeviceMessage =
   | { type: "escape"; generation: bigint; action: "DOWN" | "UP" }
   | { type: "popup"; generation: bigint; action: "DOWN" | "UP" }
   | { type: "newChat"; generation: bigint; action: "DOWN" | "UP" }
+  | { type: "approve"; generation: bigint; action: "DOWN" | "UP" }
+  | { type: "reject"; generation: bigint; action: "DOWN" | "UP" }
   | { type: "key"; generation: bigint; slot: number; action: "DOWN" | "UP" }
   | { type: "encoder"; generation: bigint; action: "CW" | "CCW" | "DOWN" | "UP" }
   | { type: "joystick"; generation: bigint; action: "UP" | "DOWN" | "LEFT" | "RIGHT" };
@@ -76,6 +78,18 @@ export function parseDeviceMessage(line: string): DeviceMessage | null {
     const action = parts[2];
     return action === "DOWN" || action === "UP"
       ? { type: "newChat", generation: currentGeneration, action }
+      : null;
+  }
+  if (parts[0] === "APPROVE" && parts.length === 3) {
+    const action = parts[2];
+    return action === "DOWN" || action === "UP"
+      ? { type: "approve", generation: currentGeneration, action }
+      : null;
+  }
+  if (parts[0] === "REJECT" && parts.length === 3) {
+    const action = parts[2];
+    return action === "DOWN" || action === "UP"
+      ? { type: "reject", generation: currentGeneration, action }
       : null;
   }
   if (parts[0] === "KEY" && parts.length === 4) {

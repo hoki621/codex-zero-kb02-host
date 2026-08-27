@@ -47,8 +47,14 @@ export class SafeBindings {
       context.retransmit();
       return false;
     }
-    if (message.type === "escape" || message.type === "newChat") {
+    if (
+      message.type === "escape" ||
+      message.type === "newChat" ||
+      message.type === "approve" ||
+      message.type === "reject"
+    ) {
       if (message.action !== "DOWN") return false;
+      const approvalKey = message.type === "approve" ? "y" : message.type === "reject" ? "n" : null;
       const paneId = currentPaneId(await this.herdr.request("pane.current", {}));
       if (!paneId) return false;
       const agent = focusedCodexAgent(await this.herdr.agentList(), paneId);
@@ -58,14 +64,18 @@ export class SafeBindings {
         return false;
       }
       if (message.type === "newChat" && !acceptsTextInput(agent)) return false;
+      if (approvalKey !== null && agent.agent_status !== "blocked") return false;
       const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
       if (finalPaneId !== paneId) return false;
-      if (message.type === "newChat") {
+      if (message.type !== "escape") {
         const finalAgent = focusedCodexAgent(await this.herdr.agentList(), paneId);
         if (
           !finalAgent ||
           finalAgent.terminal_id !== terminalId ||
-          !acceptsTextInput(finalAgent) ||
+          (message.type === "newChat"
+            ? !acceptsTextInput(finalAgent)
+            : finalAgent.agent_status !== "blocked") ||
+          context.state.slots.filter((slot) => slot?.terminalId === terminalId).length !== 1 ||
           !context.isCurrent()
         ) return false;
       } else if (!context.isCurrent()) {
@@ -73,8 +83,10 @@ export class SafeBindings {
       }
       if (message.type === "escape") {
         await this.herdr.request("agent.send_keys", { target: paneId, keys: ["esc"] });
-      } else {
+      } else if (message.type === "newChat") {
         await this.herdr.request("agent.prompt", { target: paneId, text: "/new" });
+      } else {
+        await this.herdr.request("agent.send_keys", { target: paneId, keys: [approvalKey] });
       }
       return true;
     }
