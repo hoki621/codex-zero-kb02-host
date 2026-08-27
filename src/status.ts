@@ -15,7 +15,6 @@ export const PLUGIN_STATE_DIR = path.join(
   PLUGIN_ID,
 );
 export const STATUS_SOCKET_PATH = path.join(PLUGIN_STATE_DIR, "status.sock");
-export const OWNERSHIP_PATH = path.join(PLUGIN_STATE_DIR, "owned-pane.json");
 
 export interface StatusPayload extends HerdrState {
   version: 1;

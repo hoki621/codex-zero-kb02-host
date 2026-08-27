@@ -24,8 +24,7 @@ HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" ZERO_KB02_PORT=/dev/cu.usbmod
 ```
 
 The link command installs the fixed `hoki621.zero-kb02` manifest from this
-repository. The bridge checks that exact enabled local plugin before opening
-the read-only `status` popup; it never links or enables plugins automatically.
+repository. The bridge never links or enables plugins automatically.
 
 Set `HERDR_SOCKET_PATH` explicitly so the bridge can reconnect after a Herdr
 server restart. `ZERO_KB02_PORT` is optional when exactly one connected USB CDC
@@ -43,7 +42,7 @@ If more than one does, set `ZERO_KB02_PORT` to the intended path.
 | K1 | `ESC <generation> DOWN` | send Escape to the focused mapped Codex pane |
 | K2 | `KEY <generation> 0 DOWN` | focus agent slot 0 |
 | K3 | `KEY <generation> 1 DOWN` | focus agent slot 1 |
-| K4 | `POPUP <generation> DOWN` | toggle only the popup pane opened and owned by this bridge session |
+| K4 | `POPUP <generation> DOWN` | toggle the Herdr session's active popup globally |
 | K5 | `KEY <generation> 2 DOWN` | focus agent slot 2 |
 | K6 | `KEY <generation> 3 DOWN` | focus agent slot 3 |
 | K7 | `KEY <generation> 4 DOWN` | focus agent slot 4 |
@@ -51,11 +50,8 @@ If more than one does, set `ZERO_KB02_PORT` to the intended path.
 | K9–K12 | unavailable | reserved; no operation |
 
 `ESC UP`, `POPUP UP`, `KEY UP`, `ENC`, `JOY`, and joystick push perform no
-operation in v1. K4 never uses global `popup.close`: it closes only the
-`pane_id` returned by its own successful `plugin.pane.open`.
-
-If the bridge or Herdr disconnects while a popup ownership record exists, K4
-locks instead of guessing whether that pane survived. Stop the bridge, close
-the old popup or restart Herdr and verify it is gone, remove only
-`$HOME/.local/state/herdr/plugins/hoki621.zero-kb02/owned-pane.json`, then
-restart the bridge. The bridge must stay outside Herdr-managed panes.
+operation in v1. K4 first calls global `popup.close`; only exact
+`popup_not_open` opens the fixed read-only `hoki621.zero-kb02` `status` popup.
+Because Herdr 0.8.2 exposes one session-wide popup without public ownership,
+K4 can close another plugin's active popup. The bridge tracks no popup pane ID
+and persists no popup state. It must stay outside Herdr-managed panes.
