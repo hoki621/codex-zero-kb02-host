@@ -1,6 +1,7 @@
 import { SafeBindings } from "./bindings.js";
 import { HerdrClient } from "./herdr.js";
 import { PopupController } from "./popup.js";
+import { CodexAppServer, ReasoningController } from "./reasoning.js";
 import { HerdrStateSource, type HerdrState } from "./state.js";
 import { StatusPublisher } from "./status.js";
 import { UsbCdc } from "./usb.js";
@@ -20,13 +21,16 @@ const offline: HerdrState = {
 const bindingClient = new HerdrClient(socketPath);
 const bindings = new SafeBindings(bindingClient);
 const popup = new PopupController(bindingClient);
+const reasoning = new ReasoningController(bindingClient, new CodexAppServer());
 const status = new StatusPublisher();
 const usb = new UsbCdc({
   portPath: process.env.ZERO_KB02_PORT,
   onMessage: (message, context) => {
     const work = message.type === "popup"
       ? popup.handle(message, context)
-      : bindings.handle(message, context);
+      : message.type === "encoder"
+        ? reasoning.handle(message, context)
+        : bindings.handle(message, context);
     void work.catch((error: Error) =>
       report("binding", error),
     );

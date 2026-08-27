@@ -3,6 +3,7 @@ export * from "./cdc.js";
 export * from "./herdr.js";
 export * from "./slots.js";
 export * from "./popup.js";
+export * from "./reasoning.js";
 export * from "./status.js";
 export * from "./state.js";
 export * from "./usb.js";

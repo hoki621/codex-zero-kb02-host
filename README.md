@@ -19,12 +19,18 @@ installing dependencies:
 ```sh
 npm ci
 npm run build
+codex app-server daemon start
 herdr plugin link --enabled "$(pwd)"
 HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v11 npm start
 ```
 
 The link command installs the fixed `hoki621.zero-kb02` manifest from this
 repository. The bridge never links or enables plugins automatically.
+
+Encoder control requires Codex CLI 0.149.1 managed by its built-in local App
+Server. Start Codex panes with `codex --remote unix://`; the bridge uses the
+same `$CODEX_HOME/app-server-control/app-server-control.sock`. It neither
+starts a second daemon nor supports desktop App or non-managed CLI panes.
 
 Set `HERDR_SOCKET_PATH` explicitly so the bridge can reconnect after a Herdr
 server restart. `ZERO_KB02_PORT` is optional when exactly one connected USB CDC
@@ -49,8 +55,11 @@ If more than one does, set `ZERO_KB02_PORT` to the intended path.
 | K8 | `KEY <generation> 5 DOWN` | focus agent slot 5 |
 | K9–K12 | unavailable | reserved; no operation |
 
-`ESC UP`, `POPUP UP`, `KEY UP`, `ENC`, `JOY`, and joystick push perform no
-operation in v1. K4 first calls global `popup.close`; only exact
+Encoder `CW` raises the focused managed Codex CLI thread's reasoning effort by
+one supported level; `CCW` lowers it by one. Both clamp at the model's endpoint.
+
+`ESC UP`, `POPUP UP`, `KEY UP`, Encoder `DOWN/UP`, `JOY`, and joystick push
+perform no operation in v1. K4 first calls global `popup.close`; only exact
 `popup_not_open` opens the fixed read-only `hoki621.zero-kb02` `status` popup.
 Because Herdr 0.8.2 exposes one session-wide popup without public ownership,
 K4 can close another plugin's active popup. The bridge tracks no popup pane ID

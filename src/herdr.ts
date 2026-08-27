@@ -12,6 +12,7 @@ export const HERDR_PROTOCOL_MAJOR = 20;
 
 export interface RawAgent {
   agent?: unknown;
+  agent_session?: unknown;
   terminal_id?: unknown;
   pane_id?: unknown;
   workspace_id?: unknown;
