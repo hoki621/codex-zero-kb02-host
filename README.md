@@ -54,7 +54,7 @@ If more than one does, set `ZERO_KB02_PORT` to the intended path.
 | K7 | `KEY <generation> 4 DOWN` | focus agent slot 4 |
 | K8 | `KEY <generation> 5 DOWN` | focus agent slot 5 |
 | K9–K11 | unavailable | reserved; no operation |
-| K12 | `NEW <generation> DOWN` | send fixed `/new` to the focused mapped Codex pane |
+| K12 | `NEW <generation> DOWN` | send fixed `/new` to the focused mapped idle/done Codex pane |
 
 Encoder `CW` raises the focused managed Codex CLI thread's reasoning effort by
 one supported level; `CCW` lowers it by one. Both clamp at the model's endpoint.

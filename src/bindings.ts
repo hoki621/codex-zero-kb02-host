@@ -34,6 +34,10 @@ function liveAgent(agents: readonly RawAgent[], terminalId: string): RawAgent | 
   return matches.length === 1 ? matches[0]! : null;
 }
 
+function acceptsTextInput(agent: RawAgent): boolean {
+  return agent.agent_status === "idle" || agent.agent_status === "done";
+}
+
 export class SafeBindings {
   constructor(private readonly herdr: FocusClient) {}
 
@@ -53,8 +57,20 @@ export class SafeBindings {
       if (context.state.slots.filter((slot) => slot?.terminalId === terminalId).length !== 1) {
         return false;
       }
+      if (message.type === "newChat" && !acceptsTextInput(agent)) return false;
       const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
-      if (finalPaneId !== paneId || !context.isCurrent()) return false;
+      if (finalPaneId !== paneId) return false;
+      if (message.type === "newChat") {
+        const finalAgent = focusedCodexAgent(await this.herdr.agentList(), paneId);
+        if (
+          !finalAgent ||
+          finalAgent.terminal_id !== terminalId ||
+          !acceptsTextInput(finalAgent) ||
+          !context.isCurrent()
+        ) return false;
+      } else if (!context.isCurrent()) {
+        return false;
+      }
       const keys = message.type === "escape" ? ["esc"] : ["/", "n", "e", "w", "enter"];
       await this.herdr.request("agent.send_keys", { target: paneId, keys });
       return true;

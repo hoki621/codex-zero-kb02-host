@@ -97,28 +97,72 @@ test("K1 Escape uses focused mapped Codex pane and a final focus recheck", async
   ]);
 });
 
-test("K12 New Chat sends only the fixed command to the focused mapped Codex pane", async () => {
-  const calls: { method: string; params: Record<string, unknown> }[] = [];
-  const herdr = {
-    agentList: async () => [agent(0, "focused-pane"), agent(1, "other-pane")],
-    request: async (method: string, params: Record<string, unknown>) => {
-      calls.push({ method, params });
-      return method === "pane.current"
-        ? { type: "pane_current", pane: { pane_id: "focused-pane" } }
-        : {};
-    },
-  };
-  const router = new SafeBindings(herdr);
+test("K12 New Chat sends only the fixed command when focused status accepts text", async () => {
+  for (const status of ["idle", "done"]) {
+    const calls: { method: string; params: Record<string, unknown> }[] = [];
+    let lists = 0;
+    const herdr = {
+      agentList: async () => {
+        lists += 1;
+        return [{ ...agent(0, "focused-pane"), agent_status: status }, agent(1, "other-pane")];
+      },
+      request: async (method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params });
+        return method === "pane.current"
+          ? { type: "pane_current", pane: { pane_id: "focused-pane" } }
+          : {};
+      },
+    };
+    const router = new SafeBindings(herdr);
 
-  assert.equal(await router.handle(parsed("NEW 7 DOWN"), inputContext(online()).context), true);
-  assert.deepEqual(calls, [
-    { method: "pane.current", params: {} },
-    { method: "pane.current", params: {} },
-    { method: "agent.send_keys", params: {
-      target: "focused-pane",
-      keys: ["/", "n", "e", "w", "enter"],
-    } },
-  ]);
+    assert.equal(await router.handle(parsed("NEW 7 DOWN"), inputContext(online()).context), true);
+    assert.equal(lists, 2);
+    assert.deepEqual(calls, [
+      { method: "pane.current", params: {} },
+      { method: "pane.current", params: {} },
+      { method: "agent.send_keys", params: {
+        target: "focused-pane",
+        keys: ["/", "n", "e", "w", "enter"],
+      } },
+    ]);
+  }
+});
+
+test("K12 New Chat rejects non-input agent statuses", async () => {
+  for (const status of ["working", "blocked", "unknown", undefined]) {
+    const sent: string[] = [];
+    const router = new SafeBindings({
+      agentList: async () => [{ ...agent(0, "focused-pane"), agent_status: status }],
+      request: async (method: string) => {
+        if (method === "agent.send_keys") sent.push(method);
+        return { type: "pane_current", pane: { pane_id: "focused-pane" } };
+      },
+    });
+    assert.equal(await router.handle(parsed("NEW 7 DOWN"), inputContext(online()).context), false);
+    assert.deepEqual(sent, []);
+  }
+});
+
+test("K12 New Chat rejects final status or terminal identity changes", async () => {
+  for (const finalAgent of [
+    { ...agent(0, "focused-pane"), agent_status: "working" },
+    { ...agent(1, "focused-pane"), agent_status: "idle" },
+  ]) {
+    const sent: string[] = [];
+    const agents = [
+      [{ ...agent(0, "focused-pane"), agent_status: "idle" }],
+      [finalAgent],
+    ];
+    const router = new SafeBindings({
+      agentList: async () => agents.shift() ?? [],
+      request: async (method: string) => {
+        if (method === "agent.send_keys") sent.push(method);
+        return { type: "pane_current", pane: { pane_id: "focused-pane" } };
+      },
+    });
+    assert.equal(await router.handle(parsed("NEW 7 DOWN"), inputContext(online()).context), false);
+    assert.deepEqual(sent, []);
+  }
 });
 
 test("stale, offline, empty, UP, NEW UP, ENC, and JOY inputs perform no operation", async () => {
@@ -176,8 +220,11 @@ test("K1 Escape and K12 New Chat reject unsafe focus, identity, mapping, and fin
       const sent: string[] = [];
       const current = inputContext(testCase.state ?? online());
       let paneRead = 0;
+      const agents = line.startsWith("NEW")
+        ? testCase.agents.map((candidate) => ({ ...candidate, agent_status: "idle" }))
+        : testCase.agents;
       const router = new SafeBindings({
-        agentList: async () => testCase.agents,
+        agentList: async () => agents,
         request: async (method: string) => {
           if (method === "agent.send_keys") {
             sent.push(method);
