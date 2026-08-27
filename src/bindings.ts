@@ -71,8 +71,11 @@ export class SafeBindings {
       } else if (!context.isCurrent()) {
         return false;
       }
-      const keys = message.type === "escape" ? ["esc"] : ["/", "n", "e", "w", "enter"];
-      await this.herdr.request("agent.send_keys", { target: paneId, keys });
+      if (message.type === "escape") {
+        await this.herdr.request("agent.send_keys", { target: paneId, keys: ["esc"] });
+      } else {
+        await this.herdr.request("agent.prompt", { target: paneId, text: "/new" });
+      }
       return true;
     }
     if (message.type !== "key" || message.action !== "DOWN") return false;

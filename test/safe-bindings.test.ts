@@ -120,10 +120,7 @@ test("K12 New Chat sends only the fixed command when focused status accepts text
     assert.deepEqual(calls, [
       { method: "pane.current", params: {} },
       { method: "pane.current", params: {} },
-      { method: "agent.send_keys", params: {
-        target: "focused-pane",
-        keys: ["/", "n", "e", "w", "enter"],
-      } },
+      { method: "agent.prompt", params: { target: "focused-pane", text: "/new" } },
     ]);
   }
 });
@@ -134,7 +131,7 @@ test("K12 New Chat rejects non-input agent statuses", async () => {
     const router = new SafeBindings({
       agentList: async () => [{ ...agent(0, "focused-pane"), agent_status: status }],
       request: async (method: string) => {
-        if (method === "agent.send_keys") sent.push(method);
+        if (method === "agent.send_keys" || method === "agent.prompt") sent.push(method);
         return { type: "pane_current", pane: { pane_id: "focused-pane" } };
       },
     });
@@ -156,7 +153,7 @@ test("K12 New Chat rejects final status or terminal identity changes", async () 
     const router = new SafeBindings({
       agentList: async () => agents.shift() ?? [],
       request: async (method: string) => {
-        if (method === "agent.send_keys") sent.push(method);
+        if (method === "agent.send_keys" || method === "agent.prompt") sent.push(method);
         return { type: "pane_current", pane: { pane_id: "focused-pane" } };
       },
     });
@@ -226,7 +223,7 @@ test("K1 Escape and K12 New Chat reject unsafe focus, identity, mapping, and fin
       const router = new SafeBindings({
         agentList: async () => agents,
         request: async (method: string) => {
-          if (method === "agent.send_keys") {
+          if (method === "agent.send_keys" || method === "agent.prompt") {
             sent.push(method);
             return {};
           }
