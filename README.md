@@ -44,8 +44,11 @@ local App Server. From a Herdr pane, start Codex with
 the bridge uses the
 same `$CODEX_HOME/app-server-control/app-server-control.sock`. It neither
 starts a second daemon nor supports desktop App or non-managed CLI panes.
-In a Herdr pane, the integration reports the exact Codex `SessionStart`
-`session_id`; the bridge accepts only one UUIDv7 identity that is still loaded.
+For remote App Server sessions, the hook passes the exact Codex `SessionStart`
+`session_id` as developer context. The first model turn runs one fixed command
+that checks `HERDR_ENV`, the pane ID, and exact `$CODEX_THREAD_ID` equality
+before reporting `agent=codex` and `source=herdr:codex`; invalid input no-ops.
+The bridge accepts only one UUIDv7 identity that is still loaded.
 No `/status` lookup or manual `pane report-agent-session` step is needed.
 
 The launcher adds the three exact Herdr names to the documented `include_only`
