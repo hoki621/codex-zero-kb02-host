@@ -22,6 +22,7 @@ npm run build
 codex app-server daemon start
 herdr plugin link --enabled "$(pwd)"
 herdr integration install codex
+npm run install-codex-hook
 HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v11 npm start
 ```
 
@@ -30,9 +31,12 @@ repository. The bridge never links or enables plugins automatically.
 
 `herdr integration install codex` is a one-time setup step. Herdr preserves
 unrelated entries while adding its `SessionStart` command to
-`~/.codex/hooks.json` and enabling Codex hooks. Review the resulting hook and
-`~/.codex/herdr-agent-state.sh`, then approve Codex's hook trust prompt on the
-next launch. Do not use `--dangerously-bypass-hook-trust`.
+`~/.codex/hooks.json` and enabling Codex hooks. `npm run install-codex-hook`
+then preserves those entries while adding the zero-kb02 fallback for Codex
+remote sessions where `transcript_path` is null or absent. Review the resulting hooks,
+`~/.codex/herdr-agent-state.sh`, and the added command for
+`dist/src/codex-hook.js`, then approve Codex's hook trust prompt on the next
+launch. Do not use `--dangerously-bypass-hook-trust`.
 
 Encoder control requires Codex CLI 0.149.1 or 0.150.1 managed by its built-in
 local App Server. Start Codex panes with `codex --remote unix://`; the bridge uses the
