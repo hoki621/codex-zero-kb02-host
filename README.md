@@ -21,41 +21,19 @@ npm ci
 npm run build
 codex app-server daemon start
 herdr plugin link --enabled "$(pwd)"
-herdr integration install codex
-npm run install-codex-hook
 HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v11 npm start
 ```
 
 The link command installs the fixed `hoki621.zero-kb02` manifest from this
 repository. The bridge never links or enables plugins automatically.
 
-`herdr integration install codex` is a one-time setup step. Herdr preserves
-unrelated entries while adding its `SessionStart` command to
-`~/.codex/hooks.json` and enabling Codex hooks. `npm run install-codex-hook`
-then preserves those entries while adding the zero-kb02 fallback for Codex
-remote sessions where `transcript_path` is null or absent. Review the resulting hooks,
-`~/.codex/herdr-agent-state.sh`, and the added command for
-`dist/src/codex-hook.js`, then approve Codex's hook trust prompt on the next
-launch. Do not use `--dangerously-bypass-hook-trust`.
-
 Encoder control requires Codex CLI 0.149.1 or 0.150.1 managed by its built-in
-local App Server. From a Herdr pane, start Codex with
-`npm --prefix /absolute/path/to/codex-zero-kb02/host run codex-herdr -- --remote unix://`;
-the bridge uses the
-same `$CODEX_HOME/app-server-control/app-server-control.sock`. It neither
-starts a second daemon nor supports desktop App or non-managed CLI panes.
-For remote App Server sessions, the hook passes the exact Codex `SessionStart`
-`session_id` as developer context. The first model turn runs one fixed command
-that checks `HERDR_ENV`, the pane ID, and exact `$CODEX_THREAD_ID` equality
-before reporting `agent=codex` and `source=herdr:codex`; invalid input no-ops.
-The bridge accepts only one UUIDv7 identity that is still loaded.
-No `/status` lookup or manual `pane report-agent-session` step is needed.
-
-The launcher adds the three exact Herdr names to the documented `include_only`
-array and overrides only their `shell_environment_policy.set` subkeys. Existing
-inheritance, exclusions, and other `set` values remain unchanged. It disables shell
-snapshots for that run so the override cannot be bypassed, and does not edit
-`~/.codex/config.toml`.
+local App Server. From a Herdr pane, start it with `codex --remote unix://`,
+then follow the parent README's per-session `/status` and exact
+`herdr pane report-agent-session` procedure. The bridge accepts only one UUIDv7
+identity that is still loaded. It does not install Codex hooks, edit Codex
+configuration, start a second daemon, or support desktop App and non-managed
+CLI panes.
 
 Set `HERDR_SOCKET_PATH` explicitly so the bridge can reconnect after a Herdr
 server restart. `ZERO_KB02_PORT` is optional when exactly one connected USB CDC
