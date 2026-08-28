@@ -223,15 +223,22 @@ test("App Server moves one supported effort and clamps without model changes", a
 });
 
 test("App Server accepts only the supported exact CLI versions", async () => {
-  for (const version of ["0.149.1", "0.150.1"]) {
-    const accepted = await fakeAppServer((request) => response(request, "medium", version));
+  for (const { version, userAgent } of [
+    { version: "0.149.1" },
+    { version: "0.150.1", userAgent: "zero-kb02/0.150.1 (Mac OS 26.6.2; arm64) ghostty/1.3.1 (zero-kb02-diagnostic; 0.1.0)" },
+  ]) {
+    const accepted = await fakeAppServer((request) => response(request, "medium", version, userAgent));
     try {
       assert.equal(await new CodexAppServer(accepted.path).changeEffort(THREAD, "CW", async () => true), true);
     } finally {
       await accepted.close();
     }
   }
-  for (const [version, userAgent] of [["0.150.2"], ["0.151.0"], ["0.149.1", "invalid"]]) {
+  for (const { version, userAgent } of [
+    { version: "0.150.2" },
+    { version: "0.151.0" },
+    { version: "0.149.1", userAgent: "invalid" },
+  ]) {
     const rejected = await fakeAppServer((request) => response(request, "medium", version, userAgent));
     try {
       assert.equal(await new CodexAppServer(rejected.path).changeEffort(THREAD, "CW", async () => true), false);
