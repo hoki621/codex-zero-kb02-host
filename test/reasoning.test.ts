@@ -102,6 +102,8 @@ test("ENC fails closed for stale, offline, non-rotation, ambiguous, and raced in
     agents = [{ ...managed(), agent_session: { ...managed().agent_session, source } }];
     assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
   }
+  agents = [{ ...managed(), agent_session: { ...managed().agent_session, value: "not-a-uuidv7" } }];
+  assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
   agents = [managed(), managed()];
   assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
   agents = [managed()];
@@ -255,6 +257,20 @@ test("App Server unavailable endpoint fails before update", async () => {
   await assert.rejects(
     new CodexAppServer(path.join(os.tmpdir(), "zero-kb02-missing.sock")).changeEffort(THREAD, "CW", async () => true),
   );
+});
+
+test("App Server requires exactly one loaded target thread", async () => {
+  for (const loaded of [[], [THREAD, THREAD]]) {
+    const server = await fakeAppServer((request) => request.method === "thread/loaded/list"
+      ? { data: loaded }
+      : response(request));
+    try {
+      assert.equal(await new CodexAppServer(server.path).changeEffort(THREAD, "CW", async () => true), false);
+      assert.equal(server.requests.some(({ method }) => method === "thread/settings/update"), false);
+    } finally {
+      await server.close();
+    }
+  }
 });
 
 test("App Server rejects pagination cursors from loaded threads and models", async () => {
