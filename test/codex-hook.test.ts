@@ -74,41 +74,20 @@ test("installer preserves existing hooks and is idempotent", async () => {
   }
 });
 
-test("Herdr launcher keeps the existing shell policy and adds only exact pane values", () => {
+test("Herdr launcher overrides only include_only and exact Herdr set keys", () => {
   const args = codexLaunchArgs({
     HERDR_ENV: "1",
     HERDR_PANE_ID: "wR:p6",
     HERDR_SOCKET_PATH: "/tmp/herdr.sock",
   });
   assert.ok(args);
-  assert.deepEqual(args.slice(0, 3), ["--disable", "shell_snapshot", "-c"]);
-
-  const policy = args[3];
-  assert.ok(policy);
-  assert.match(policy, /^shell_environment_policy=\{inherit="core",set=\{/);
-  for (const entry of [
-    '"HERDR_ENV"="1"',
-    '"HERDR_PANE_ID"="wR:p6"',
-    '"HERDR_SOCKET_PATH"="/tmp/herdr.sock"',
-    '"PATH"="include"',
-    '"HOME"="include"',
-    '"USER"="include"',
-    '"BROWSER_USE_*"="include"',
-    '"CODEX_CLI_PATH"="include"',
-    '"CODEX_HOME"="include"',
-    '"NODE_REPL_*"="include"',
-    '"SKY_CUA_*"="include"',
-    '"AWS_*"="exclude"',
-    '"AZURE_*"="exclude"',
-    '"*TOKEN*"="exclude"',
-    '"*SECRET*"="exclude"',
-    '"*KEY*"="exclude"',
-  ]) {
-    assert.ok(policy.includes(entry), entry);
-  }
-  for (const key of ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"]) {
-    assert.equal(policy.split(`"${key}"=`).length - 1, 2, key);
-  }
+  assert.deepEqual(args, [
+    "--disable", "shell_snapshot",
+    "-c", 'shell_environment_policy.include_only=["PATH","HOME","USER","BROWSER_USE_*","CODEX_CLI_PATH","CODEX_HOME","NODE_REPL_*","SKY_CUA_*","HERDR_ENV","HERDR_PANE_ID","HERDR_SOCKET_PATH"]',
+    "-c", 'shell_environment_policy.set.HERDR_ENV="1"',
+    "-c", 'shell_environment_policy.set.HERDR_PANE_ID="wR:p6"',
+    "-c", 'shell_environment_policy.set.HERDR_SOCKET_PATH="/tmp/herdr.sock"',
+  ]);
 
   assert.equal(codexLaunchArgs({ HERDR_ENV: "0", HERDR_PANE_ID: "wR:p6", HERDR_SOCKET_PATH: "/tmp/herdr.sock" }), null);
   assert.equal(codexLaunchArgs({ HERDR_ENV: "1", HERDR_PANE_ID: "not a pane", HERDR_SOCKET_PATH: "/tmp/herdr.sock" }), null);

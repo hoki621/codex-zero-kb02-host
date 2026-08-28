@@ -48,10 +48,10 @@ In a Herdr pane, the integration reports the exact Codex `SessionStart`
 `session_id`; the bridge accepts only one UUIDv7 identity that is still loaded.
 No `/status` lookup or manual `pane report-agent-session` step is needed.
 
-The launcher keeps the documented `core` inheritance, existing Browser/Codex/Node/Sky
-allowlist, and AWS/Azure/token/secret/key exclusions. It adds only the three exact
-Herdr values through a per-run `-c shell_environment_policy=...` override and disables
-shell snapshots for that run so the override cannot be bypassed. It does not edit
+The launcher adds the three exact Herdr names to the documented `include_only`
+array and overrides only their `shell_environment_policy.set` subkeys. Existing
+inheritance, exclusions, and other `set` values remain unchanged. It disables shell
+snapshots for that run so the override cannot be bypassed, and does not edit
 `~/.codex/config.toml`.
 
 Set `HERDR_SOCKET_PATH` explicitly so the bridge can reconnect after a Herdr

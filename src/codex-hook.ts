@@ -6,24 +6,10 @@ import { fileURLToPath } from "node:url";
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PANE_ID = /^(?:[A-Za-z0-9]+:[A-Za-z0-9]+|[0-9]+-[0-9]+)$/;
-const SHELL_ENVIRONMENT_FILTERS = {
-  PATH: "include",
-  HOME: "include",
-  USER: "include",
-  "BROWSER_USE_*": "include",
-  CODEX_CLI_PATH: "include",
-  CODEX_HOME: "include",
-  "NODE_REPL_*": "include",
-  "SKY_CUA_*": "include",
-  HERDR_ENV: "include",
-  HERDR_PANE_ID: "include",
-  HERDR_SOCKET_PATH: "include",
-  "AWS_*": "exclude",
-  "AZURE_*": "exclude",
-  "*TOKEN*": "exclude",
-  "*SECRET*": "exclude",
-  "*KEY*": "exclude",
-} as const;
+const SHELL_ENVIRONMENT_INCLUDE_ONLY = [
+  "PATH", "HOME", "USER", "BROWSER_USE_*", "CODEX_CLI_PATH", "CODEX_HOME",
+  "NODE_REPL_*", "SKY_CUA_*", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH",
+];
 
 type Reporter = (paneId: string, sessionId: string) => boolean;
 type Spawn = (
@@ -90,17 +76,13 @@ export function codexLaunchArgs(env: NodeJS.ProcessEnv): string[] | null {
     return null;
   }
 
-  const table = (entries: Record<string, string>) => Object.entries(entries)
-    .map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`)
-    .join(",");
-  const set = table({
-    HERDR_ENV: env.HERDR_ENV,
-    HERDR_PANE_ID: env.HERDR_PANE_ID,
-    HERDR_SOCKET_PATH: env.HERDR_SOCKET_PATH,
-  });
-  const filters = table(SHELL_ENVIRONMENT_FILTERS);
-  const policy = `shell_environment_policy={inherit="core",set={${set}},filters={${filters}}}`;
-  return ["--disable", "shell_snapshot", "-c", policy];
+  return [
+    "--disable", "shell_snapshot",
+    "-c", `shell_environment_policy.include_only=${JSON.stringify(SHELL_ENVIRONMENT_INCLUDE_ONLY)}`,
+    "-c", `shell_environment_policy.set.HERDR_ENV=${JSON.stringify(env.HERDR_ENV)}`,
+    "-c", `shell_environment_policy.set.HERDR_PANE_ID=${JSON.stringify(env.HERDR_PANE_ID)}`,
+    "-c", `shell_environment_policy.set.HERDR_SOCKET_PATH=${JSON.stringify(env.HERDR_SOCKET_PATH)}`,
+  ];
 }
 
 export async function installCodexHook(hooksPath: string, commandPath: string): Promise<void> {
