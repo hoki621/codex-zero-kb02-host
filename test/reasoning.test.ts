@@ -185,9 +185,9 @@ async function fakeAppServer(
   };
 }
 
-function response(request: Rpc, effort = "medium", version = "0.149.1") {
+function response(request: Rpc, effort = "medium", version = "0.149.1", userAgent = `codex-cli/${version}`) {
   switch (request.method) {
-    case "initialize": return { platformOs: "macos", userAgent: `codex-cli/${version}` };
+    case "initialize": return { platformOs: "macos", userAgent };
     case "thread/loaded/list": return { data: [THREAD] };
     case "thread/resume": return { thread: { id: THREAD }, model: "gpt-5.6", reasoningEffort: effort };
     case "model/list": return {
@@ -222,14 +222,27 @@ test("App Server moves one supported effort and clamps without model changes", a
   }
 });
 
-test("App Server version mismatch and unavailable endpoint fail before update", async () => {
-  const mismatch = await fakeAppServer((request) => response(request, "medium", "0.150.0"));
-  try {
-    assert.equal(await new CodexAppServer(mismatch.path).changeEffort(THREAD, "CW", async () => true), false);
-    assert.equal(mismatch.requests.some(({ method }) => method === "thread/settings/update"), false);
-  } finally {
-    await mismatch.close();
+test("App Server accepts only the supported exact CLI versions", async () => {
+  for (const version of ["0.149.1", "0.150.1"]) {
+    const accepted = await fakeAppServer((request) => response(request, "medium", version));
+    try {
+      assert.equal(await new CodexAppServer(accepted.path).changeEffort(THREAD, "CW", async () => true), true);
+    } finally {
+      await accepted.close();
+    }
   }
+  for (const [version, userAgent] of [["0.150.2"], ["0.151.0"], ["0.149.1", "invalid"]]) {
+    const rejected = await fakeAppServer((request) => response(request, "medium", version, userAgent));
+    try {
+      assert.equal(await new CodexAppServer(rejected.path).changeEffort(THREAD, "CW", async () => true), false);
+      assert.equal(rejected.requests.some(({ method }) => method === "thread/settings/update"), false);
+    } finally {
+      await rejected.close();
+    }
+  }
+});
+
+test("App Server unavailable endpoint fails before update", async () => {
   await assert.rejects(
     new CodexAppServer(path.join(os.tmpdir(), "zero-kb02-missing.sock")).changeEffort(THREAD, "CW", async () => true),
   );

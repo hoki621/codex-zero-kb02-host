@@ -27,8 +27,8 @@ HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" ZERO_KB02_PORT=/dev/cu.usbmod
 The link command installs the fixed `hoki621.zero-kb02` manifest from this
 repository. The bridge never links or enables plugins automatically.
 
-Encoder control requires Codex CLI 0.149.1 managed by its built-in local App
-Server. Start Codex panes with `codex --remote unix://`; the bridge uses the
+Encoder control requires Codex CLI 0.149.1 or 0.150.1 managed by its built-in
+local App Server. Start Codex panes with `codex --remote unix://`; the bridge uses the
 same `$CODEX_HOME/app-server-control/app-server-control.sock`. It neither
 starts a second daemon nor supports desktop App or non-managed CLI panes.
 
