@@ -238,6 +238,8 @@ test("App Server accepts only the supported exact CLI versions", async () => {
     { version: "0.150.2" },
     { version: "0.151.0" },
     { version: "0.149.1", userAgent: "invalid" },
+    { version: "0.150.1", userAgent: "zero-kb02/0.150.1/evil" },
+    { version: "0.150.1", userAgent: "zero-kb02/0.150.1_evil" },
   ]) {
     const rejected = await fakeAppServer((request) => response(request, "medium", version, userAgent));
     try {

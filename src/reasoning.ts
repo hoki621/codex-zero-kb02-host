@@ -6,7 +6,7 @@ import type { HerdrClient, RawAgent } from "./herdr.js";
 import { connectSocket, REQUEST_TIMEOUT_MS } from "./socket.js";
 import type { UsbInputContext } from "./usb.js";
 
-const CODEX_USER_AGENT = /(?:^|\/)(?:0\.149\.1|0\.150\.1)(?![0-9A-Za-z.-])/;
+const CODEX_USER_AGENT = /(?:^|\/)(?:0\.149\.1|0\.150\.1)(?:\s|$)/;
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type JsonObject = Record<string, unknown>;
