@@ -6,6 +6,24 @@ import { fileURLToPath } from "node:url";
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PANE_ID = /^(?:[A-Za-z0-9]+:[A-Za-z0-9]+|[0-9]+-[0-9]+)$/;
+const SHELL_ENVIRONMENT_FILTERS = {
+  PATH: "include",
+  HOME: "include",
+  USER: "include",
+  "BROWSER_USE_*": "include",
+  CODEX_CLI_PATH: "include",
+  CODEX_HOME: "include",
+  "NODE_REPL_*": "include",
+  "SKY_CUA_*": "include",
+  HERDR_ENV: "include",
+  HERDR_PANE_ID: "include",
+  HERDR_SOCKET_PATH: "include",
+  "AWS_*": "exclude",
+  "AZURE_*": "exclude",
+  "*TOKEN*": "exclude",
+  "*SECRET*": "exclude",
+  "*KEY*": "exclude",
+} as const;
 
 type Reporter = (paneId: string, sessionId: string) => boolean;
 type Spawn = (
@@ -62,6 +80,29 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+export function codexLaunchArgs(env: NodeJS.ProcessEnv): string[] | null {
+  if (
+    env.HERDR_ENV !== "1" ||
+    !env.HERDR_SOCKET_PATH ||
+    !env.HERDR_PANE_ID ||
+    !PANE_ID.test(env.HERDR_PANE_ID)
+  ) {
+    return null;
+  }
+
+  const table = (entries: Record<string, string>) => Object.entries(entries)
+    .map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`)
+    .join(",");
+  const set = table({
+    HERDR_ENV: env.HERDR_ENV,
+    HERDR_PANE_ID: env.HERDR_PANE_ID,
+    HERDR_SOCKET_PATH: env.HERDR_SOCKET_PATH,
+  });
+  const filters = table(SHELL_ENVIRONMENT_FILTERS);
+  const policy = `shell_environment_policy={inherit="core",set={${set}},filters={${filters}}}`;
+  return ["--disable", "shell_snapshot", "-c", policy];
+}
+
 export async function installCodexHook(hooksPath: string, commandPath: string): Promise<void> {
   const config = object(JSON.parse(await readFile(hooksPath, "utf8")));
   const hooks = object(config?.hooks);
@@ -85,6 +126,15 @@ export async function installCodexHook(hooksPath: string, commandPath: string): 
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === "--launch") {
+    const args = codexLaunchArgs(process.env);
+    if (!args) throw new Error("codex-herdr requires HERDR_ENV=1, HERDR_PANE_ID, and HERDR_SOCKET_PATH");
+    const result = spawnSync("codex", [...args, ...process.argv.slice(3)], { stdio: "inherit" });
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? 1;
+    return;
+  }
+
   if (process.argv[2] === "--install") {
     const codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex");
     await installCodexHook(path.join(codexHome, "hooks.json"), fileURLToPath(import.meta.url));
@@ -103,7 +153,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    if (process.argv[2] === "--install") {
+    if (process.argv[2] === "--install" || process.argv[2] === "--launch") {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;
     }

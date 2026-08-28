@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "codex-herdr": "npm run build && node dist/src/codex-hook.js --launch",
     "dry-run": "npm run build && node dist/src/dry-run.js",
     "install-codex-hook": "npm run build && node dist/src/codex-hook.js --install",
     "start": "npm run build && node dist/src/main.js",

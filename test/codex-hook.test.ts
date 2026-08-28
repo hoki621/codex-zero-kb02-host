@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { installCodexHook, reportSessionStart, reportToHerdr } from "../src/codex-hook.js";
+import { codexLaunchArgs, installCodexHook, reportSessionStart, reportToHerdr } from "../src/codex-hook.js";
 
 const SESSION_ID = "01a0469f-fdd6-72c3-98c8-6f0ab8067b80";
 
@@ -72,4 +72,44 @@ test("installer preserves existing hooks and is idempotent", async () => {
   } finally {
     await rm(directory, { recursive: true });
   }
+});
+
+test("Herdr launcher keeps the existing shell policy and adds only exact pane values", () => {
+  const args = codexLaunchArgs({
+    HERDR_ENV: "1",
+    HERDR_PANE_ID: "wR:p6",
+    HERDR_SOCKET_PATH: "/tmp/herdr.sock",
+  });
+  assert.ok(args);
+  assert.deepEqual(args.slice(0, 3), ["--disable", "shell_snapshot", "-c"]);
+
+  const policy = args[3];
+  assert.ok(policy);
+  assert.match(policy, /^shell_environment_policy=\{inherit="core",set=\{/);
+  for (const entry of [
+    '"HERDR_ENV"="1"',
+    '"HERDR_PANE_ID"="wR:p6"',
+    '"HERDR_SOCKET_PATH"="/tmp/herdr.sock"',
+    '"PATH"="include"',
+    '"HOME"="include"',
+    '"USER"="include"',
+    '"BROWSER_USE_*"="include"',
+    '"CODEX_CLI_PATH"="include"',
+    '"CODEX_HOME"="include"',
+    '"NODE_REPL_*"="include"',
+    '"SKY_CUA_*"="include"',
+    '"AWS_*"="exclude"',
+    '"AZURE_*"="exclude"',
+    '"*TOKEN*"="exclude"',
+    '"*SECRET*"="exclude"',
+    '"*KEY*"="exclude"',
+  ]) {
+    assert.ok(policy.includes(entry), entry);
+  }
+  for (const key of ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"]) {
+    assert.equal(policy.split(`"${key}"=`).length - 1, 2, key);
+  }
+
+  assert.equal(codexLaunchArgs({ HERDR_ENV: "0", HERDR_PANE_ID: "wR:p6", HERDR_SOCKET_PATH: "/tmp/herdr.sock" }), null);
+  assert.equal(codexLaunchArgs({ HERDR_ENV: "1", HERDR_PANE_ID: "not a pane", HERDR_SOCKET_PATH: "/tmp/herdr.sock" }), null);
 });

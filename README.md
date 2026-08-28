@@ -39,12 +39,20 @@ remote sessions where `transcript_path` is null or absent. Review the resulting 
 launch. Do not use `--dangerously-bypass-hook-trust`.
 
 Encoder control requires Codex CLI 0.149.1 or 0.150.1 managed by its built-in
-local App Server. Start Codex panes with `codex --remote unix://`; the bridge uses the
+local App Server. From a Herdr pane, start Codex with
+`npm --prefix /absolute/path/to/codex-zero-kb02/host run codex-herdr -- --remote unix://`;
+the bridge uses the
 same `$CODEX_HOME/app-server-control/app-server-control.sock`. It neither
 starts a second daemon nor supports desktop App or non-managed CLI panes.
 In a Herdr pane, the integration reports the exact Codex `SessionStart`
 `session_id`; the bridge accepts only one UUIDv7 identity that is still loaded.
 No `/status` lookup or manual `pane report-agent-session` step is needed.
+
+The launcher keeps the documented `core` inheritance, existing Browser/Codex/Node/Sky
+allowlist, and AWS/Azure/token/secret/key exclusions. It adds only the three exact
+Herdr values through a per-run `-c shell_environment_policy=...` override and disables
+shell snapshots for that run so the override cannot be bypassed. It does not edit
+`~/.codex/config.toml`.
 
 Set `HERDR_SOCKET_PATH` explicitly so the bridge can reconnect after a Herdr
 server restart. `ZERO_KB02_PORT` is optional when exactly one connected USB CDC
