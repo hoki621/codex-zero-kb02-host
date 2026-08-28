@@ -3,9 +3,25 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { installCodexHook, reportSessionStart } from "../src/codex-hook.js";
+import { installCodexHook, reportSessionStart, reportToHerdr } from "../src/codex-hook.js";
 
 const SESSION_ID = "01a0469f-fdd6-72c3-98c8-6f0ab8067b80";
+
+test("Herdr CLI receives the pane ID before report options", () => {
+  let invocation: unknown;
+  const spawn = (command: string, args: string[]) => {
+    invocation = [command, ...args];
+    return { status: 0 };
+  };
+
+  assert.equal(reportToHerdr("wR:p6", SESSION_ID, spawn), true);
+  assert.deepEqual(invocation, [
+    "herdr", "pane", "report-agent-session", "wR:p6",
+    "--source", "herdr:codex",
+    "--agent", "codex",
+    "--agent-session-id", SESSION_ID,
+  ]);
+});
 
 test("SessionStart reports only an exact Herdr pane UUIDv7 identity", () => {
   const calls: string[][] = [];

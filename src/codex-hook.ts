@@ -8,6 +8,11 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const PANE_ID = /^(?:[A-Za-z0-9]+:[A-Za-z0-9]+|[0-9]+-[0-9]+)$/;
 
 type Reporter = (paneId: string, sessionId: string) => boolean;
+type Spawn = (
+  command: string,
+  args: string[],
+  options: { stdio: "ignore"; timeout: number },
+) => { status: number | null };
 type JsonObject = Record<string, unknown>;
 
 function object(value: unknown): JsonObject | null {
@@ -16,13 +21,17 @@ function object(value: unknown): JsonObject | null {
     : null;
 }
 
-function reportToHerdr(paneId: string, sessionId: string): boolean {
-  const result = spawnSync("herdr", [
+export function reportToHerdr(
+  paneId: string,
+  sessionId: string,
+  spawn: Spawn = spawnSync,
+): boolean {
+  const result = spawn("herdr", [
     "pane", "report-agent-session",
+    paneId,
     "--source", "herdr:codex",
     "--agent", "codex",
     "--agent-session-id", sessionId,
-    paneId,
   ], { stdio: "ignore", timeout: 2_000 });
   return result.status === 0;
 }
