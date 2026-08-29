@@ -19,6 +19,7 @@ installing dependencies:
 ```sh
 npm ci
 npm run build
+npm link
 codex app-server daemon start
 herdr plugin link --enabled "$(pwd)"
 HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v11 npm start
@@ -28,12 +29,12 @@ The link command installs the fixed `hoki621.zero-kb02` manifest from this
 repository. The bridge never links or enables plugins automatically.
 
 Encoder control requires Codex CLI 0.149.1 or 0.150.1 managed by its built-in
-local App Server. From a Herdr pane, start it with `codex --remote unix://`,
-then follow the parent README's per-session `/status` and exact
-`herdr pane report-agent-session` procedure. The bridge accepts only one UUIDv7
-identity that is still loaded. It does not install Codex hooks, edit Codex
-configuration, start a second daemon, or support desktop App and non-managed
-CLI panes.
+local App Server. Run `npm link` once in this repository, then start Codex from
+any Herdr pane with `codex-micro`. It starts the existing App Server daemon when
+needed and registers the exact thread automatically, including after `/new`.
+The bridge accepts only one UUIDv7 identity that is still loaded. It does not
+install Codex hooks, edit Codex configuration, start a second daemon, or support
+desktop App and non-managed CLI panes.
 
 Set `HERDR_SOCKET_PATH` explicitly so the bridge can reconnect after a Herdr
 server restart. `ZERO_KB02_PORT` is optional when exactly one connected USB CDC

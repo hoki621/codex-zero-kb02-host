@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { LifecycleObserver, WebSocketTap } from "../src/codex-micro.js";
 import {
   CodexAppServer,
   ReasoningController,
@@ -222,6 +223,74 @@ test("App Server moves one supported effort and clamps without model changes", a
   } finally {
     await clamped.close();
   }
+});
+
+test("App Server changes a relay-known effort without resuming the thread", async () => {
+  const server = await fakeAppServer((request) => response(request));
+  try {
+    assert.equal(
+      await new CodexAppServer(server.path).changeKnownEffort(
+        THREAD, "gpt-5.6", "medium", "CW", async () => true,
+      ),
+      "high",
+    );
+    assert.equal(server.requests.some(({ method }) => method === "thread/resume"), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test("codex-micro correlates lifecycle responses by id and observes /new settings", () => {
+  const nextThread = "01901234-5678-7abc-8def-0123456789ab";
+  const forkedThread = "01911234-5678-7abc-8def-0123456789ab";
+  const observed: unknown[] = [];
+  const observer = new LifecycleObserver((state) => observed.push(state));
+
+  observer.client(JSON.stringify({ id: 1, method: "thread/start", params: { cwd: "/same" } }));
+  observer.client(JSON.stringify({ id: 2, method: "thread/start", params: { cwd: "/same" } }));
+  observer.server(JSON.stringify({ id: 2, result: {
+    thread: { id: nextThread }, model: "gpt-5.6", reasoningEffort: "low",
+  } }));
+  observer.server(JSON.stringify({ id: 1, result: {
+    thread: { id: THREAD }, model: "gpt-5.6", reasoningEffort: "medium",
+  } }));
+  observer.server(JSON.stringify({ method: "thread/settings/updated", params: {
+    threadId: nextThread, threadSettings: { model: "gpt-5.6", effort: "high" },
+  } }));
+  observer.client(JSON.stringify({ id: 3, method: "thread/resume" }));
+  observer.server(JSON.stringify({ id: 3, result: {
+    thread: { id: "not-a-uuidv7" }, model: "gpt-5.6", reasoningEffort: "high",
+  } }));
+  observer.client(JSON.stringify({ id: 4, method: "thread/fork" }));
+  observer.server(JSON.stringify({ id: 4, result: {
+    thread: { id: forkedThread }, model: "gpt-5.6", reasoningEffort: "medium",
+  } }));
+
+  assert.deepEqual(observed, [
+    { threadId: nextThread, model: "gpt-5.6", effort: "low" },
+    { threadId: nextThread, model: "gpt-5.6", effort: "high" },
+    { threadId: forkedThread, model: "gpt-5.6", effort: "medium" },
+  ]);
+});
+
+test("codex-micro observes split masked and fragmented WebSocket text", () => {
+  const observed: string[] = [];
+  const client = new WebSocketTap(true, (text) => observed.push(text));
+  const payload = Buffer.from("client");
+  const mask = Buffer.from([1, 2, 3, 4]);
+  const masked = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]!));
+  const request = Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]);
+  const upgrade = Buffer.from("GET / HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+  client.push(Buffer.concat([upgrade, request.subarray(0, 3)]));
+  client.push(request.subarray(3));
+
+  const server = new WebSocketTap(false, (text) => observed.push(text));
+  server.push(Buffer.concat([
+    Buffer.from("HTTP/1.1 101 Switching Protocols\r\n\r\n"),
+    Buffer.from([0x01, 3]), Buffer.from("ser"),
+    Buffer.from([0x80, 3]), Buffer.from("ver"),
+  ]));
+  assert.deepEqual(observed, ["client", "server"]);
 });
 
 test("App Server accepts only the supported exact CLI versions", async () => {

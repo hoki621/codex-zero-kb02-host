@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { DeviceMessage } from "./cdc.js";
@@ -230,6 +231,21 @@ export function defaultAppServerSocket(): string {
   return path.join(codexHome, "app-server-control", "app-server-control.sock");
 }
 
+export function codexMicroStatePath(threadId: string): string {
+  return path.join(os.tmpdir(), `zero-kb02-codex-${process.getuid?.() ?? "user"}`, `${threadId}.json`);
+}
+
+type CodexMicroState = {
+  threadId: string;
+  model: string;
+  effort: string;
+  pid: number;
+};
+
+function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
 export class CodexAppServer {
   constructor(readonly socketPath = defaultAppServerSocket()) {}
 
@@ -273,47 +289,117 @@ export class CodexAppServer {
       ) {
         return false;
       }
-      const models = await session.request("model/list", {
-        limit: 100,
-        includeHidden: true,
-      });
-      if (!Array.isArray(models.data) || models.nextCursor != null) return false;
-      const matches = models.data
-        .map(object)
-        .filter((model): model is JsonObject =>
-          model !== null &&
-          (model.id === resumed.model || model.model === resumed.model),
-        );
-      if (matches.length !== 1) return false;
-      const rawEfforts = matches[0]!.supportedReasoningEfforts;
-      if (!Array.isArray(rawEfforts)) return false;
-      const efforts = rawEfforts.map((entry) => object(entry)?.reasoningEffort);
-      if (
-        efforts.some((effort) => typeof effort !== "string" || effort.length === 0) ||
-        new Set(efforts).size !== efforts.length
-      ) {
-        return false;
-      }
-      const current = efforts.indexOf(resumed.reasoningEffort);
-      if (current === -1) return false;
-      const nextIndex = Math.max(
-        0,
-        Math.min(efforts.length - 1, current + (direction === "CW" ? 1 : -1)),
-      );
-      const effort = efforts[nextIndex];
-      if (effort === resumed.reasoningEffort) return true;
-      if (typeof effort !== "string" || !(await beforeUpdate())) return false;
-      const updated = await session.request("thread/settings/update", {
-        threadId,
-        effort,
-      });
-      if (Object.keys(updated).length !== 0) {
-        throw new Error("Codex App Server thread/settings/update returned an invalid result");
-      }
-      return true;
+      return (await this.update(session, threadId, resumed.model, resumed.reasoningEffort, direction, beforeUpdate)) !== null;
     } finally {
       session.close();
     }
+  }
+
+  async changeKnownEffort(
+    threadId: string,
+    modelId: string,
+    currentEffort: string,
+    direction: Direction,
+    beforeUpdate: () => Promise<boolean>,
+  ): Promise<string | null> {
+    const session = new AppServerSession(await WebSocketSession.connect(this.socketPath));
+    try {
+      const initialized = await session.request("initialize", {
+        clientInfo: { name: "zero-kb02", title: "zero-kb02", version: "0.1.0" },
+        capabilities: { experimentalApi: true, requestAttestation: false },
+      });
+      if (
+        initialized.platformOs !== "macos" ||
+        typeof initialized.userAgent !== "string" ||
+        !CODEX_USER_AGENT.test(initialized.userAgent)
+      ) return null;
+      session.notify("initialized");
+      const loaded = await session.request("thread/loaded/list", {});
+      if (
+        !Array.isArray(loaded.data) ||
+        loaded.data.filter((id) => id === threadId).length !== 1 ||
+        loaded.nextCursor != null
+      ) return null;
+      return await this.update(session, threadId, modelId, currentEffort, direction, beforeUpdate);
+    } finally {
+      session.close();
+    }
+  }
+
+  private async update(
+    session: AppServerSession,
+    threadId: string,
+    modelId: string,
+    currentEffort: string,
+    direction: Direction,
+    beforeUpdate: () => Promise<boolean>,
+  ): Promise<string | null> {
+    const models = await session.request("model/list", {
+      limit: 100,
+      includeHidden: true,
+    });
+    if (!Array.isArray(models.data) || models.nextCursor != null) return null;
+    const matches = models.data
+      .map(object)
+      .filter((model): model is JsonObject =>
+        model !== null &&
+        (model.id === modelId || model.model === modelId),
+      );
+    if (matches.length !== 1) return null;
+    const rawEfforts = matches[0]!.supportedReasoningEfforts;
+    if (!Array.isArray(rawEfforts)) return null;
+    const efforts = rawEfforts.map((entry) => object(entry)?.reasoningEffort);
+    if (
+      efforts.some((effort) => typeof effort !== "string" || effort.length === 0) ||
+      new Set(efforts).size !== efforts.length
+    ) return null;
+    const current = efforts.indexOf(currentEffort);
+    if (current === -1) return null;
+    const nextIndex = Math.max(
+      0,
+      Math.min(efforts.length - 1, current + (direction === "CW" ? 1 : -1)),
+    );
+    const effort = efforts[nextIndex];
+    if (effort === currentEffort) return currentEffort;
+    if (typeof effort !== "string" || !(await beforeUpdate())) return null;
+    const updated = await session.request("thread/settings/update", { threadId, effort });
+    if (Object.keys(updated).length !== 0) {
+      throw new Error("Codex App Server thread/settings/update returned an invalid result");
+    }
+    return effort;
+  }
+}
+
+export class CodexReasoningClient {
+  constructor(private readonly appServer = new CodexAppServer()) {}
+
+  async changeEffort(
+    threadId: string,
+    direction: Direction,
+    beforeUpdate: () => Promise<boolean>,
+  ): Promise<boolean> {
+    try {
+      const state = JSON.parse(await readFile(codexMicroStatePath(threadId), "utf8")) as Partial<CodexMicroState>;
+      if (
+        state.threadId === threadId &&
+        typeof state.model === "string" &&
+        typeof state.effort === "string" &&
+        typeof state.pid === "number" && processExists(state.pid)
+      ) {
+        const effort = await this.appServer.changeKnownEffort(
+          threadId, state.model, state.effort, direction, beforeUpdate,
+        );
+        if (!effort) return false;
+        const target = codexMicroStatePath(threadId);
+        const temporary = `${target}.${process.pid}.host`;
+        await writeFile(temporary, JSON.stringify({ ...state, effort }), { mode: 0o600 });
+        await rename(temporary, target);
+        return true;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    return this.appServer.changeEffort(threadId, direction, beforeUpdate);
   }
 }
 

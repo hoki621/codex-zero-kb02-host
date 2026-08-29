@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "codex-micro": "dist/src/codex-micro.js"
+  },
   "engines": {
     "node": "22.x"
   },
