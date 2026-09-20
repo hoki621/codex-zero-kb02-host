@@ -1,13 +1,12 @@
-import { createHash, randomBytes } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { DeviceMessage } from "./cdc.js";
 import type { HerdrClient, RawAgent } from "./herdr.js";
-import { connectSocket, REQUEST_TIMEOUT_MS } from "./socket.js";
+import { AppServerSession } from "./app-server.js";
 import type { UsbInputContext } from "./usb.js";
 
-const CODEX_USER_AGENT = /(?:^|\/)(?:0\.149\.1|0\.150\.1)(?:\s|$)/;
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type JsonObject = Record<string, unknown>;
@@ -16,219 +15,13 @@ type ReasoningClient = Pick<CodexAppServer, "changeEffort">;
 type ReasoningHerdr = Pick<HerdrClient, "agentList" | "request">;
 
 function object(value: unknown): JsonObject | null {
-  return typeof value === "object" && value !== null
+  return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as JsonObject
     : null;
 }
 
-class AppServerSession {
-  private nextId = 1;
-
-  constructor(private readonly socket: WebSocketSession) {}
-
-  notify(method: string): void {
-    this.socket.send(JSON.stringify({ method }));
-  }
-
-  async request(method: string, params: JsonObject): Promise<JsonObject> {
-    const id = this.nextId++;
-    this.socket.send(JSON.stringify({ method, id, params }));
-    for (let skipped = 0; skipped < 64; skipped++) {
-      const line = await this.nextLine();
-      let message: JsonObject;
-      try {
-        const parsed = object(JSON.parse(line));
-        if (!parsed) throw new Error();
-        message = parsed;
-      } catch {
-        throw new Error("Codex App Server returned invalid JSON");
-      }
-      if (message.id !== id) continue;
-      if (object(message.error)) {
-        const error = message.error as JsonObject;
-        throw new Error(
-          `Codex App Server ${String(error.code ?? "error")}: ${String(error.message ?? method)}`,
-        );
-      }
-      const result = object(message.result);
-      if (!result) throw new Error(`Codex App Server ${method} returned no result`);
-      return result;
-    }
-    throw new Error(`Codex App Server ${method} returned too many unrelated messages`);
-  }
-
-  close(): void {
-    this.socket.close();
-  }
-
-  private async nextLine(): Promise<string> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        this.socket.receive(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("Codex App Server request timed out")),
-            REQUEST_TIMEOUT_MS,
-          );
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-}
-
-const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-class WebSocketSession {
-  private buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-  private messages: string[] = [];
-  private waiter: ((value: string) => void) | null = null;
-  private failure: Error | null = null;
-
-  private constructor(private readonly socket: import("node:net").Socket) {
-    socket.on("data", (chunk: Buffer) => {
-      this.buffer = Buffer.concat([this.buffer, chunk]);
-      this.parse();
-    });
-    socket.on("error", (error) => this.fail(error));
-    socket.on("close", () => this.fail(new Error("Codex App Server closed before responding")));
-  }
-
-  static async connect(socketPath: string): Promise<WebSocketSession> {
-    const socket = await connectSocket(socketPath);
-    const key = randomBytes(16).toString("base64");
-    socket.write([
-      "GET / HTTP/1.1",
-      "Host: localhost",
-      "Connection: Upgrade",
-      "Upgrade: websocket",
-      `Sec-WebSocket-Key: ${key}`,
-      "Sec-WebSocket-Version: 13",
-      "\r\n",
-    ].join("\r\n"));
-    const response = await readUpgrade(socket);
-    const accept = createHash("sha1").update(key + WEBSOCKET_GUID).digest("base64");
-    if (
-      !/^HTTP\/1\.1 101\b/.test(response.head) ||
-      !response.head.toLowerCase().includes("upgrade: websocket") ||
-      !response.head.toLowerCase().includes(`sec-websocket-accept: ${accept.toLowerCase()}`)
-    ) {
-      socket.destroy();
-      throw new Error("Codex App Server rejected WebSocket upgrade");
-    }
-    const session = new WebSocketSession(socket);
-    session.buffer = response.rest;
-    session.parse();
-    return session;
-  }
-
-  send(text: string): void {
-    this.sendFrame(0x1, Buffer.from(text));
-  }
-
-  private sendFrame(opcode: number, payload: Buffer): void {
-    const mask = randomBytes(4);
-    const header = payload.length < 126
-      ? Buffer.from([0x80 | opcode, 0x80 | payload.length])
-      : Buffer.from([0x80 | opcode, 0xfe, payload.length >> 8, payload.length & 0xff]);
-    const masked = Buffer.alloc(payload.length);
-    for (let index = 0; index < payload.length; index++) {
-      masked[index] = payload[index]! ^ mask[index % 4]!;
-    }
-    this.socket.write(Buffer.concat([header, mask, masked]));
-  }
-
-  receive(): Promise<string> {
-    const message = this.messages.shift();
-    if (message !== undefined) return Promise.resolve(message);
-    if (this.failure) return Promise.reject(this.failure);
-    return new Promise((resolve) => { this.waiter = resolve; });
-  }
-
-  close(): void {
-    this.socket.destroy();
-  }
-
-  private parse(): void {
-    while (this.buffer.length >= 2) {
-      const first = this.buffer[0]!;
-      const second = this.buffer[1]!;
-      let length = second & 0x7f;
-      let offset = 2;
-      if ((first & 0x80) === 0 || (second & 0x80) !== 0) {
-        return this.fail(new Error("Codex App Server returned an invalid WebSocket frame"));
-      }
-      if (length === 126) {
-        if (this.buffer.length < 4) return;
-        length = this.buffer.readUInt16BE(2);
-        offset = 4;
-      } else if (length === 127) {
-        if (this.buffer.length < 10) return;
-        const wideLength = this.buffer.readBigUInt64BE(2);
-        if (wideLength > 1_048_576n) {
-          return this.fail(new Error("Codex App Server frame is too large"));
-        }
-        length = Number(wideLength);
-        offset = 10;
-      }
-      if (this.buffer.length < offset + length) return;
-      const payload = this.buffer.subarray(offset, offset + length);
-      this.buffer = this.buffer.subarray(offset + length);
-      const opcode = first & 0x0f;
-      if (opcode === 0x8) return this.fail(new Error("Codex App Server closed before responding"));
-      if (opcode === 0x9) {
-        this.sendFrame(0xa, payload);
-        continue;
-      }
-      if (opcode === 0xa) continue;
-      if (opcode !== 0x1) return this.fail(new Error("Codex App Server returned a non-text frame"));
-      this.push(payload.toString("utf8"));
-    }
-  }
-
-  private push(message: string): void {
-    const waiter = this.waiter;
-    this.waiter = null;
-    if (waiter) waiter(message);
-    else this.messages.push(message);
-  }
-
-  private fail(error: Error): void {
-    if (this.failure) return;
-    this.failure = error;
-    this.socket.destroy();
-  }
-}
-
-function readUpgrade(socket: import("node:net").Socket): Promise<{ head: string; rest: Buffer }> {
-  return new Promise((resolve, reject) => {
-    let buffer = Buffer.alloc(0);
-    const timer = setTimeout(() => finish(() => reject(new Error("Codex App Server upgrade timed out"))), REQUEST_TIMEOUT_MS);
-    const finish = (done: () => void) => {
-      clearTimeout(timer);
-      socket.off("data", onData);
-      socket.off("error", onError);
-      done();
-    };
-    const onError = (error: Error) => finish(() => reject(error));
-    const onData = (chunk: Buffer) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      const end = buffer.indexOf("\r\n\r\n");
-      if (end !== -1) finish(() => resolve({
-        head: buffer.subarray(0, end).toString("ascii"),
-        rest: buffer.subarray(end + 4),
-      }));
-    };
-    socket.on("data", onData);
-    socket.on("error", onError);
-  });
-}
-
 export function defaultAppServerSocket(): string {
-  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-  return path.join(codexHome, "app-server-control", "app-server-control.sock");
+  return path.join(os.tmpdir(), `zero-kb02-server-${process.getuid?.() ?? "user"}`, "app.sock");
 }
 
 export function codexMicroStatePath(threadId: string): string {
@@ -237,12 +30,12 @@ export function codexMicroStatePath(threadId: string): string {
 
 type CodexMicroState = {
   threadId: string;
-  model: string;
-  effort: string;
+  socketPath: string;
   pid: number;
 };
 
-function processExists(pid: number): boolean {
+export function processExists(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
@@ -254,7 +47,7 @@ export class CodexAppServer {
     direction: Direction,
     beforeUpdate: () => Promise<boolean>,
   ): Promise<boolean> {
-    const session = new AppServerSession(await WebSocketSession.connect(this.socketPath));
+    const session = await AppServerSession.connect(this.socketPath);
     try {
       const initialized = await session.request("initialize", {
         clientInfo: { name: "zero-kb02", title: "zero-kb02", version: "0.1.0" },
@@ -262,8 +55,7 @@ export class CodexAppServer {
       });
       if (
         initialized.platformOs !== "macos" ||
-        typeof initialized.userAgent !== "string" ||
-        !CODEX_USER_AGENT.test(initialized.userAgent)
+        typeof initialized.userAgent !== "string"
       ) {
         return false;
       }
@@ -277,50 +69,16 @@ export class CodexAppServer {
       ) {
         return false;
       }
-      const resumed = await session.request("thread/resume", {
-        threadId,
-        excludeTurns: true,
-      });
-      const thread = object(resumed.thread);
+      const snapshot = await session.request("thread/read", { threadId, includeTurns: false });
+      const thread = object(snapshot.thread);
       if (
         thread?.id !== threadId ||
-        typeof resumed.model !== "string" ||
-        typeof resumed.reasoningEffort !== "string"
+        typeof thread.model !== "string" ||
+        (thread.reasoningEffort !== null && typeof thread.reasoningEffort !== "string")
       ) {
         return false;
       }
-      return (await this.update(session, threadId, resumed.model, resumed.reasoningEffort, direction, beforeUpdate)) !== null;
-    } finally {
-      session.close();
-    }
-  }
-
-  async changeKnownEffort(
-    threadId: string,
-    modelId: string,
-    currentEffort: string,
-    direction: Direction,
-    beforeUpdate: () => Promise<boolean>,
-  ): Promise<string | null> {
-    const session = new AppServerSession(await WebSocketSession.connect(this.socketPath));
-    try {
-      const initialized = await session.request("initialize", {
-        clientInfo: { name: "zero-kb02", title: "zero-kb02", version: "0.1.0" },
-        capabilities: { experimentalApi: true, requestAttestation: false },
-      });
-      if (
-        initialized.platformOs !== "macos" ||
-        typeof initialized.userAgent !== "string" ||
-        !CODEX_USER_AGENT.test(initialized.userAgent)
-      ) return null;
-      session.notify("initialized");
-      const loaded = await session.request("thread/loaded/list", {});
-      if (
-        !Array.isArray(loaded.data) ||
-        loaded.data.filter((id) => id === threadId).length !== 1 ||
-        loaded.nextCursor != null
-      ) return null;
-      return await this.update(session, threadId, modelId, currentEffort, direction, beforeUpdate);
+      return (await this.update(session, threadId, thread.model, thread.reasoningEffort, direction, beforeUpdate)) !== null;
     } finally {
       session.close();
     }
@@ -330,7 +88,7 @@ export class CodexAppServer {
     session: AppServerSession,
     threadId: string,
     modelId: string,
-    currentEffort: string,
+    configuredEffort: string | null,
     direction: Direction,
     beforeUpdate: () => Promise<boolean>,
   ): Promise<string | null> {
@@ -353,6 +111,8 @@ export class CodexAppServer {
       efforts.some((effort) => typeof effort !== "string" || effort.length === 0) ||
       new Set(efforts).size !== efforts.length
     ) return null;
+    const currentEffort = configuredEffort ?? matches[0]!.defaultReasoningEffort;
+    if (typeof currentEffort !== "string") return null;
     const current = efforts.indexOf(currentEffort);
     if (current === -1) return null;
     const nextIndex = Math.max(
@@ -361,12 +121,23 @@ export class CodexAppServer {
     );
     const effort = efforts[nextIndex];
     if (effort === currentEffort) return currentEffort;
+    const latest = object((await session.request("thread/read", { threadId, includeTurns: false })).thread);
+    if (latest?.id !== threadId || latest.model !== modelId || latest.reasoningEffort !== configuredEffort) return null;
     if (typeof effort !== "string" || !(await beforeUpdate())) return null;
     const updated = await session.request("thread/settings/update", { threadId, effort });
     if (Object.keys(updated).length !== 0) {
       throw new Error("Codex App Server thread/settings/update returned an invalid result");
     }
-    return effort;
+    // The update response acknowledges enqueueing; metadata changes asynchronously.
+    // Wait for confirmation before accepting the next encoder step.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const applied = object((await session.request("thread/read", { threadId, includeTurns: false })).thread);
+      if (applied?.id !== threadId || applied.model !== modelId) return null;
+      if (applied.reasoningEffort === effort) return effort;
+      if (applied.reasoningEffort !== configuredEffort) return null;
+      await delay(50);
+    }
+    throw new Error("Codex did not confirm the reasoning setting; encoder queue cancelled");
   }
 }
 
@@ -378,28 +149,23 @@ export class CodexReasoningClient {
     direction: Direction,
     beforeUpdate: () => Promise<boolean>,
   ): Promise<boolean> {
-    try {
-      const state = JSON.parse(await readFile(codexMicroStatePath(threadId), "utf8")) as Partial<CodexMicroState>;
-      if (
-        state.threadId === threadId &&
-        typeof state.model === "string" &&
-        typeof state.effort === "string" &&
-        typeof state.pid === "number" && processExists(state.pid)
-      ) {
-        const effort = await this.appServer.changeKnownEffort(
-          threadId, state.model, state.effort, direction, beforeUpdate,
-        );
-        if (!effort) return false;
-        const target = codexMicroStatePath(threadId);
-        const temporary = `${target}.${process.pid}.host`;
-        await writeFile(temporary, JSON.stringify({ ...state, effort }), { mode: 0o600 });
-        await rename(temporary, target);
-        return true;
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    if (!THREAD_ID.test(threadId)) return false;
+    const target = codexMicroStatePath(threadId);
+    let original: string;
+    try { original = await readFile(target, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
     }
-    return this.appServer.changeEffort(threadId, direction, beforeUpdate);
+    const state = object(JSON.parse(original)) as Partial<CodexMicroState> | null;
+    if (!state || state.threadId !== threadId || state.socketPath !== this.appServer.socketPath ||
+        typeof state.pid !== "number" || !processExists(state.pid)) return false;
+    return this.appServer.changeEffort(threadId, direction, async () => {
+      try {
+        if (await readFile(target, "utf8") !== original || !processExists(state.pid!)) return false;
+      } catch { return false; }
+      return beforeUpdate();
+    });
   }
 }
 
@@ -432,7 +198,9 @@ function managedThreadId(agents: readonly RawAgent[], paneId: string): string | 
 }
 
 export class ReasoningController {
-  private busy = false;
+  private queue = Promise.resolve();
+  private pending = 0;
+  private queueEpoch = 0;
 
   constructor(
     private readonly herdr: ReasoningHerdr,
@@ -445,22 +213,35 @@ export class ReasoningController {
       context.retransmit();
       return false;
     }
-    if ((message.action !== "CW" && message.action !== "CCW") || this.busy) return false;
+    if (message.action !== "CW" && message.action !== "CCW") return false;
 
-    this.busy = true;
+    // ponytail: bounded global queue; one physical encoder has one input stream.
+    if (this.pending >= 32) throw new Error("Encoder queue full; rotation discarded");
+    this.pending++;
+    const epoch = this.queueEpoch;
+    const previous = this.queue;
+    let release!: () => void;
+    this.queue = new Promise<void>((resolve) => { release = resolve; });
     try {
       const paneId = currentPaneId(await this.herdr.request("pane.current", {}));
       if (!paneId) return false;
       const threadId = managedThreadId(await this.herdr.agentList(), paneId);
       if (!threadId) return false;
+      await previous;
+      if (epoch !== this.queueEpoch || !context.isCurrent()) return false;
       return await this.codex.changeEffort(threadId, message.action, async () => {
         const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
         if (finalPaneId !== paneId) return false;
         const finalThreadId = managedThreadId(await this.herdr.agentList(), paneId);
         return finalThreadId === threadId && context.isCurrent();
       });
+    } catch (error) {
+      this.queueEpoch++;
+      throw error;
     } finally {
-      this.busy = false;
+      await previous;
+      this.pending--;
+      release();
     }
   }
 }

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import net from "node:net";
+import http from "node:http";
+import { WebSocketServer } from "ws";
+import { AppServerSession } from "../src/app-server.js";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { LifecycleObserver, WebSocketTap } from "../src/codex-micro.js";
+import { LifecycleObserver, startRelay } from "../src/codex-micro.js";
 import {
   CodexAppServer,
   ReasoningController,
@@ -16,7 +17,6 @@ import {
 } from "../src/index.js";
 
 const THREAD = "018f1234-5678-7abc-8def-0123456789ab";
-const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 function context(state: HerdrState | null = { online: true, slots: [] }) {
   let retransmits = 0;
@@ -115,63 +115,33 @@ test("ENC fails closed for stale, offline, non-rotation, ambiguous, and raced in
 
 type Rpc = { id?: number; method: string; params?: Record<string, unknown> };
 
-function serverFrame(value: unknown): Buffer {
-  const payload = Buffer.from(JSON.stringify(value));
-  const header = payload.length < 126
-    ? Buffer.from([0x81, payload.length])
-    : Buffer.from([0x81, 126, payload.length >> 8, payload.length & 0xff]);
-  return Buffer.concat([header, payload]);
-}
-
-function readClientFrame(buffer: Buffer): { value: Rpc; rest: Buffer } | null {
-  if (buffer.length < 2) return null;
-  let length = buffer[1]! & 0x7f;
-  let offset = 2;
-  if (length === 126) {
-    if (buffer.length < 4) return null;
-    length = buffer.readUInt16BE(2);
-    offset = 4;
-  }
-  if (buffer.length < offset + 4 + length) return null;
-  const mask = buffer.subarray(offset, offset + 4);
-  const payload = buffer.subarray(offset + 4, offset + 4 + length);
-  const decoded = Buffer.alloc(length);
-  for (let index = 0; index < length; index++) decoded[index] = payload[index]! ^ mask[index % 4]!;
-  return {
-    value: JSON.parse(decoded.toString("utf8")) as Rpc,
-    rest: buffer.subarray(offset + 4 + length),
-  };
-}
-
 async function fakeAppServer(
   responder: (request: Rpc, requests: Rpc[]) => unknown,
 ): Promise<{ path: string; requests: Rpc[]; close(): Promise<void> }> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "zero-kb02-reasoning-"));
   const socketPath = path.join(directory, "app.sock");
   const requests: Rpc[] = [];
-  const server = net.createServer((socket) => {
-    let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let upgraded = false;
-    socket.on("data", (chunk: Buffer) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      if (!upgraded) {
-        const end = buffer.indexOf("\r\n\r\n");
-        if (end === -1) return;
-        const head = buffer.subarray(0, end).toString("ascii");
-        const key = /^Sec-WebSocket-Key: (.+)$/mi.exec(head)?.[1];
-        assert.ok(key);
-        const accept = createHash("sha1").update(key + GUID).digest("base64");
-        socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-        buffer = buffer.subarray(end + 4);
-        upgraded = true;
+  let appliedEffort: unknown;
+  const server = http.createServer();
+  const sockets = new WebSocketServer({ server });
+  sockets.on("connection", (socket) => {
+    socket.on("error", () => {});
+    socket.on("message", (data) => {
+      const request = JSON.parse(data.toString()) as Rpc;
+      requests.push(request);
+      if (request.id === undefined) return;
+      const result = responder(request, requests);
+      if (request.method === "thread/settings/update") appliedEffort = request.params?.effort;
+      if (request.method === "thread/read" && appliedEffort && typeof result === "object" && result !== null) {
+        const thread = (result as { thread?: Record<string, unknown> }).thread;
+        if (thread) thread.reasoningEffort = appliedEffort;
       }
-      for (let frame = readClientFrame(buffer); frame; frame = readClientFrame(buffer)) {
-        buffer = frame.rest;
-        requests.push(frame.value);
-        if (frame.value.id !== undefined) {
-          socket.write(serverFrame({ id: frame.value.id, result: responder(frame.value, requests) }));
-        }
-      }
+      if (result === "disconnect") { socket.terminate(); return; }
+      if (result === "timeout") return;
+      socket.send(JSON.stringify({ method: "unrelated/notification" }));
+      const response = JSON.stringify({ id: request.id, result });
+      socket.send(response.slice(0, 5), { fin: false });
+      socket.send(response.slice(5), { fin: true });
     });
   });
   await new Promise<void>((resolve, reject) => {
@@ -179,10 +149,11 @@ async function fakeAppServer(
     server.listen(socketPath, resolve);
   });
   return {
-    path: socketPath,
-    requests,
+    path: socketPath, requests,
     close: async () => {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      for (const socket of sockets.clients) socket.terminate();
+      await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       await rm(directory, { recursive: true });
     },
   };
@@ -192,7 +163,7 @@ function response(request: Rpc, effort = "medium", version = "0.149.1", userAgen
   switch (request.method) {
     case "initialize": return { platformOs: "macos", userAgent };
     case "thread/loaded/list": return { data: [THREAD] };
-    case "thread/resume": return { thread: { id: THREAD }, model: "gpt-5.6", reasoningEffort: effort };
+    case "thread/read": return { thread: { id: THREAD, model: "gpt-5.6", reasoningEffort: effort } };
     case "model/list": return {
       data: [{
         id: "gpt-5.6", model: "gpt-5.6",
@@ -225,21 +196,6 @@ test("App Server moves one supported effort and clamps without model changes", a
   }
 });
 
-test("App Server changes a relay-known effort without resuming the thread", async () => {
-  const server = await fakeAppServer((request) => response(request));
-  try {
-    assert.equal(
-      await new CodexAppServer(server.path).changeKnownEffort(
-        THREAD, "gpt-5.6", "medium", "CW", async () => true,
-      ),
-      "high",
-    );
-    assert.equal(server.requests.some(({ method }) => method === "thread/resume"), false);
-  } finally {
-    await server.close();
-  }
-});
-
 test("codex-micro correlates lifecycle responses by id and observes /new settings", () => {
   const nextThread = "01901234-5678-7abc-8def-0123456789ab";
   const forkedThread = "01911234-5678-7abc-8def-0123456789ab";
@@ -267,59 +223,25 @@ test("codex-micro correlates lifecycle responses by id and observes /new setting
   } }));
 
   assert.deepEqual(observed, [
-    { threadId: nextThread, model: "gpt-5.6", effort: "low" },
-    { threadId: nextThread, model: "gpt-5.6", effort: "high" },
-    { threadId: forkedThread, model: "gpt-5.6", effort: "medium" },
+    { threadId: nextThread },
+    { threadId: forkedThread },
   ]);
 });
 
-test("codex-micro observes split masked and fragmented WebSocket text", () => {
-  const observed: string[] = [];
-  const client = new WebSocketTap(true, (text) => observed.push(text));
-  const payload = Buffer.from("client");
-  const mask = Buffer.from([1, 2, 3, 4]);
-  const masked = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]!));
-  const request = Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]);
-  const upgrade = Buffer.from("GET / HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
-  client.push(Buffer.concat([upgrade, request.subarray(0, 3)]));
-  client.push(request.subarray(3));
-
-  const server = new WebSocketTap(false, (text) => observed.push(text));
-  server.push(Buffer.concat([
-    Buffer.from("HTTP/1.1 101 Switching Protocols\r\n\r\n"),
-    Buffer.from([0x01, 3]), Buffer.from("ser"),
-    Buffer.from([0x80, 3]), Buffer.from("ver"),
-  ]));
-  assert.deepEqual(observed, ["client", "server"]);
-});
-
-test("App Server accepts only the supported exact CLI versions", async () => {
-  for (const { version, userAgent } of [
-    { version: "0.149.1" },
-    { version: "0.150.1", userAgent: "zero-kb02/0.150.1 (Mac OS 26.6.2; arm64) ghostty/1.3.1 (zero-kb02-diagnostic; 0.1.0)" },
-  ]) {
-    const accepted = await fakeAppServer((request) => response(request, "medium", version, userAgent));
+test("App Server validates response capabilities across CLI upgrades", async () => {
+  for (const version of ["0.155.1", "0.156.0"]) {
+    const server = await fakeAppServer((request) => response(request, "medium", version));
     try {
-      assert.equal(await new CodexAppServer(accepted.path).changeEffort(THREAD, "CW", async () => true), true);
-    } finally {
-      await accepted.close();
-    }
+      assert.equal(await new CodexAppServer(server.path).changeEffort(THREAD, "CW", async () => true), true);
+      assert.equal(server.requests.some(({ method }) => method === "thread/resume"), false);
+    } finally { await server.close(); }
   }
-  for (const { version, userAgent } of [
-    { version: "0.150.2" },
-    { version: "0.151.0" },
-    { version: "0.149.1", userAgent: "invalid" },
-    { version: "0.150.1", userAgent: "zero-kb02/0.150.1/evil" },
-    { version: "0.150.1", userAgent: "zero-kb02/0.150.1_evil" },
-  ]) {
-    const rejected = await fakeAppServer((request) => response(request, "medium", version, userAgent));
-    try {
-      assert.equal(await new CodexAppServer(rejected.path).changeEffort(THREAD, "CW", async () => true), false);
-      assert.equal(rejected.requests.some(({ method }) => method === "thread/settings/update"), false);
-    } finally {
-      await rejected.close();
-    }
-  }
+  const unsupported = await fakeAppServer((request) => request.method === "thread/read"
+    ? { thread: { id: THREAD } } : response(request));
+  try {
+    assert.equal(await new CodexAppServer(unsupported.path).changeEffort(THREAD, "CW", async () => true), false);
+    assert.equal(unsupported.requests.some(({ method }) => method === "thread/settings/update"), false);
+  } finally { await unsupported.close(); }
 });
 
 test("App Server unavailable endpoint fails before update", async () => {
@@ -354,4 +276,89 @@ test("App Server rejects pagination cursors from loaded threads and models", asy
       await server.close();
     }
   }
+});
+
+test("RPC rejects disconnects immediately and bounds silent response waits", async () => {
+  for (const failure of ["disconnect", "timeout"]) {
+    const server = await fakeAppServer(() => failure);
+    const session = await AppServerSession.connect(server.path);
+    try { await assert.rejects(session.request("initialize", {}, 30), /disconnected|timed out/); }
+    finally { session.close(); await server.close(); }
+  }
+});
+
+test("pending lifecycle invalidates old identity and ignores reversed stale responses", () => {
+  const states: string[] = [];
+  const observer = new LifecycleObserver((state) => states.push(state.threadId), () => states.push("invalid"));
+  observer.client(JSON.stringify({ id: 1, method: "thread/start" }));
+  observer.client(JSON.stringify({ id: 2, method: "thread/resume" }));
+  observer.server(JSON.stringify({ id: 1, result: { thread: { id: THREAD }, model: "x", reasoningEffort: "low" } }));
+  observer.server(JSON.stringify({ id: 2, error: { code: -1 } }));
+  assert.deepEqual(states, ["invalid", "invalid"]);
+});
+
+test("relay forwards fragmented responses and cleans up an active client", async () => {
+  const server = await fakeAppServer(() => ({ thread: { id: THREAD }, model: "x", reasoningEffort: "low" }));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "relay-test-"));
+  const relayPath = path.join(directory, "relay.sock");
+  const states: string[] = [];
+  let closed = 0;
+  const close = await startRelay(relayPath, server.path, () => ({
+    observer: new LifecycleObserver((state) => states.push(state.threadId)),
+    settled: async () => {}, close: () => { closed++; },
+  }));
+  const session = await AppServerSession.connect(relayPath);
+  try {
+    await session.request("thread/start", {});
+    assert.deepEqual(states, [THREAD]);
+    await close();
+    assert.equal(closed, 1);
+  } finally { session.close(); await server.close(); await rm(directory, { recursive: true }); }
+});
+
+test("encoder queues rotations, preserves order and drops invalidated context", async () => {
+  const directions: string[] = [];
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const controller = new ReasoningController({
+    request: async () => ({ type: "pane_current", pane: { pane_id: "focused" } }),
+    agentList: async () => [managed()],
+  }, { changeEffort: async (_id, direction, guard) => {
+    directions.push(direction);
+    if (directions.length === 1) { entered(); await blocked; }
+    return guard();
+  } });
+  const first = controller.handle(message("ENC 7 CW"), context().value);
+  await started;
+  const second = controller.handle(message("ENC 7 CCW"), context().value);
+  const stale = context().value;
+  const third = controller.handle(message("ENC 7 CW"), stale);
+  stale.isCurrent = () => false;
+  release();
+  assert.deepEqual(await Promise.all([first, second, third]), [true, true, false]);
+  assert.deepEqual(directions, ["CW", "CCW"]);
+});
+
+test("effort update refuses settings changed while fetching the model", async () => {
+  let reads = 0;
+  const server = await fakeAppServer((request) => response(request,
+    request.method === "thread/read" && ++reads > 1 ? "low" : "medium"));
+  try {
+    assert.equal(await new CodexAppServer(server.path).changeEffort(THREAD, "CW", async () => true), false);
+    assert.equal(server.requests.some(({ method }) => method === "thread/settings/update"), false);
+  } finally { await server.close(); }
+});
+
+test("unset effort uses the model default before the first turn", async () => {
+  const server = await fakeAppServer((request) => {
+    if (request.method === "thread/read") return { thread: { id: THREAD, model: "gpt-5.6", reasoningEffort: null } };
+    if (request.method === "model/list") return { data: [{ model: "gpt-5.6", defaultReasoningEffort: "medium", supportedReasoningEfforts: ["low", "medium", "high"].map((reasoningEffort) => ({ reasoningEffort })) }] };
+    return response(request);
+  });
+  try {
+    assert.equal(await new CodexAppServer(server.path).changeEffort(THREAD, "CW", async () => true), true);
+    assert.equal(server.requests.find(({ method }) => method === "thread/settings/update")?.params?.effort, "high");
+  } finally { await server.close(); }
 });

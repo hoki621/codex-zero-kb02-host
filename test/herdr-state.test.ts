@@ -7,9 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import {
   DEFAULT_RECONCILE_MS,
-  HERDR_PROTOCOL_MAJOR,
   HerdrStateSource,
-  ProtocolVersionError,
   normalizeStatus,
   type HerdrState,
   type RawAgent,
@@ -42,7 +40,7 @@ async function waitFor(check: () => boolean, timeoutMs = 1_500): Promise<void> {
 }
 
 class FakeHerdr {
-  protocol = HERDR_PROTOCOL_MAJOR;
+  protocol: unknown = 22;
   version = "0.8.2-test";
   agents: RawAgent[] = [];
   requests: string[] = [];
@@ -272,17 +270,26 @@ test("periodic reconcile repairs missed events and reconnects a dropped subscrip
   );
 });
 
-test("protocol major mismatch fails before subscription", async (t) => {
+test("JSON API accepts internal protocol changes but rejects malformed ping", async (t) => {
   const fake = await FakeHerdr.start();
-  fake.protocol = HERDR_PROTOCOL_MAJOR + 1;
-  const source = new HerdrStateSource({
-    socketPath: fake.socketPath,
-    onState: () => {},
-  });
+  const source = new HerdrStateSource({ socketPath: fake.socketPath, onState: () => {} });
   t.after(() => source.stop());
   t.after(() => fake.close());
+  fake.protocol = 999;
+  await source.start();
+  source.stop();
+  fake.protocol = "22";
+  await assert.rejects(source.start(), /invalid result/);
+});
 
-  await assert.rejects(source.start(), ProtocolVersionError);
-  assert.deepEqual(fake.requests, ["ping"]);
-  assert.equal(fake.subscriptionBatches.length, 0);
+test("ambiguous terminal and pane identities are excluded completely", async (t) => {
+  const fake = await FakeHerdr.start();
+  const states: HerdrState[] = [];
+  fake.agents = [agent(1), agent(1, "blocked", "codex", "moved"),
+    agent(2, "idle", "codex", "shared"), agent(3, "idle", "codex", "shared"), agent(4)];
+  const source = new HerdrStateSource({ socketPath: fake.socketPath, onState: (state) => states.push(state) });
+  t.after(() => source.stop());
+  t.after(() => fake.close());
+  await source.start();
+  assert.deepEqual(states.at(-1)!.slots.filter(Boolean).map((slot) => slot!.terminalId), ["t4"]);
 });

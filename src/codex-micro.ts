@@ -1,20 +1,24 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import net from "node:net";
+import http from "node:http";
+import { WebSocket, WebSocketServer } from "ws";
+import { connectWebSocket } from "./app-server.js";
+import { brewCodex, doctor, runningServer, runServer } from "./runtime.js";
+import { HerdrClient } from "./herdr.js";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { codexMicroStatePath, defaultAppServerSocket } from "./reasoning.js";
-import { connectSocket } from "./socket.js";
+import { codexMicroStatePath } from "./reasoning.js";
 
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PANE_ID = /^(?:[A-Za-z0-9]+:[A-Za-z0-9]+|[0-9]+-[0-9]+)$/;
 const LIFECYCLE = new Set(["thread/start", "thread/resume", "thread/fork"]);
 
 type JsonObject = Record<string, unknown>;
-type ThreadState = { threadId: string; model: string; effort: string };
+type ThreadState = { threadId: string };
 
 function object(value: unknown): JsonObject | null {
   return typeof value === "object" && value !== null ? value as JsonObject : null;
@@ -23,49 +27,32 @@ function object(value: unknown): JsonObject | null {
 export class LifecycleObserver {
   private readonly requests = new Map<string, number>();
   private sequence = 0;
-  private activeSequence = 0;
-  private activeThreadId: string | null = null;
 
-  constructor(private readonly onThread: (state: ThreadState) => void) {}
+  constructor(private readonly onThread: (state: ThreadState) => void, private readonly invalidate = () => {}) {}
 
   client(text: string): void {
     const message = this.parse(text);
     if (!message || !("id" in message) || typeof message.method !== "string") return;
-    if (LIFECYCLE.has(message.method)) this.requests.set(JSON.stringify(message.id), ++this.sequence);
+    if (LIFECYCLE.has(message.method)) {
+      this.invalidate();
+      this.requests.clear();
+      this.requests.set(JSON.stringify(message.id), ++this.sequence);
+    }
   }
 
   server(text: string): void {
     const message = this.parse(text);
     if (!message) return;
-    if (message.method === "thread/settings/updated") {
-      const params = object(message.params);
-      const settings = object(params?.threadSettings);
-      if (params?.threadId === this.activeThreadId) {
-        this.emit(params.threadId, settings?.model, settings?.effort);
-      }
-      return;
-    }
     if (!("id" in message)) return;
     const key = JSON.stringify(message.id);
     const sequence = this.requests.get(key);
     this.requests.delete(key);
-    if (sequence === undefined || sequence < this.activeSequence || object(message.error)) return;
+    if (sequence === undefined || sequence !== this.sequence || object(message.error)) return;
     const result = object(message.result);
     const thread = object(result?.thread);
-    if (this.emit(thread?.id, result?.model, result?.reasoningEffort)) {
-      this.activeSequence = sequence;
-      this.activeThreadId = thread!.id as string;
+    if (typeof thread?.id === "string" && THREAD_ID.test(thread.id)) {
+      this.onThread({ threadId: thread.id });
     }
-  }
-
-  private emit(threadId: unknown, model: unknown, effort: unknown): boolean {
-    if (typeof threadId === "string" && THREAD_ID.test(threadId) &&
-        typeof model === "string" && model.length > 0 &&
-        typeof effort === "string" && effort.length > 0) {
-      this.onThread({ threadId, model, effort });
-      return true;
-    }
-    return false;
   }
 
   private parse(text: string): JsonObject | null {
@@ -73,103 +60,72 @@ export class LifecycleObserver {
   }
 }
 
-export class WebSocketTap {
-  private buffer = Buffer.alloc(0);
-  private upgraded = false;
-  private fragments: Buffer[] = [];
-  private fragmentBytes = 0;
-  private disabled = false;
-
-  constructor(
-    private readonly masked: boolean,
-    private readonly onText: (text: string) => void,
-  ) {}
-
-  push(chunk: Buffer): void {
-    if (this.disabled) return;
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    if (!this.upgraded) {
-      const end = this.buffer.indexOf("\r\n\r\n");
-      if (end === -1) return;
-      this.buffer = this.buffer.subarray(end + 4);
-      this.upgraded = true;
+export async function startRelay(
+  relayPath: string,
+  upstreamPath: string,
+  observe: () => { observer: LifecycleObserver; settled(): Promise<void>; close(): void },
+): Promise<() => Promise<void>> {
+  const server = http.createServer();
+  const websockets = new WebSocketServer({ server, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false });
+  let connected = false;
+  websockets.on("connection", (client) => {
+    if (connected) { client.close(1008, "One CLI connection per relay"); return; }
+    connected = true;
+    const observation = observe();
+    const upstream = connectWebSocket(upstreamPath);
+    client.pause();
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      connected = false;
+      observation.close();
+      client.terminate();
+      upstream.terminate();
+    };
+    upstream.once("open", () => client.resume());
+    for (const socket of [client, upstream]) {
+      socket.on("error", close);
+      socket.on("close", close);
     }
-    while (this.frame()) { /* parse complete frames */ }
-  }
-
-  private frame(): boolean {
-    if (this.buffer.length < 2) return false;
-    const first = this.buffer[0]!;
-    const second = this.buffer[1]!;
-    let length = second & 0x7f;
-    let offset = 2;
-    if (length === 126) {
-      if (this.buffer.length < 4) return false;
-      length = this.buffer.readUInt16BE(2);
-      offset = 4;
-    } else if (length === 127) {
-      if (this.buffer.length < 10) return false;
-      const wide = this.buffer.readBigUInt64BE(2);
-      if (wide > 1_048_576n) return this.disable();
-      length = Number(wide);
-      offset = 10;
+    for (const [source, target, observeText] of [
+      [client, upstream, (text: string) => observation.observer.client(text)],
+      [upstream, client, (text: string) => observation.observer.server(text)],
+    ] as const) {
+      let forwarding = Promise.resolve();
+      let queuedBytes = 0;
+      source.on("message", (data, binary) => {
+        if (binary) { close(); return; }
+        const text = data.toString();
+        queuedBytes += Buffer.byteLength(text);
+        if (queuedBytes + target.bufferedAmount > 16 * 1024 * 1024) { close(); return; }
+        forwarding = forwarding.then(async () => {
+          if (closed) return;
+          observeText(text);
+          await observation.settled();
+          if (closed || target.readyState !== WebSocket.OPEN) { close(); return; }
+          target.send(text, (error) => { if (error) close(); });
+          queuedBytes -= Buffer.byteLength(text);
+        }).catch(close);
+      });
     }
-    const isMasked = (second & 0x80) !== 0;
-    if (isMasked !== this.masked || length > 1_048_576) return this.disable();
-    const total = offset + (isMasked ? 4 : 0) + length;
-    if (this.buffer.length < total) return false;
-    let payload = this.buffer.subarray(offset + (isMasked ? 4 : 0), total);
-    if (isMasked) {
-      const mask = this.buffer.subarray(offset, offset + 4);
-      payload = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]!));
-    }
-    this.buffer = this.buffer.subarray(total);
-    const opcode = first & 0x0f;
-    if (opcode === 0x1) {
-      this.fragments = [payload];
-      this.fragmentBytes = payload.length;
-    } else if (opcode === 0x0 && this.fragments.length > 0) {
-      this.fragments.push(payload);
-      this.fragmentBytes += payload.length;
-    }
-    if (this.fragmentBytes > 1_048_576) return this.disable();
-    if ((first & 0x80) !== 0 && (opcode === 0x1 || opcode === 0x0) && this.fragments.length > 0) {
-      this.onText(Buffer.concat(this.fragments).toString("utf8"));
-      this.fragments = [];
-      this.fragmentBytes = 0;
-    }
-    return true;
-  }
-
-  private disable(): false {
-    this.buffer = Buffer.alloc(0);
-    this.fragments = [];
-    this.fragmentBytes = 0;
-    this.disabled = true;
-    return false;
-  }
-}
-
-async function run(command: string, args: string[], env = process.env): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["ignore", "ignore", "inherit"] });
-    child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
   });
-}
-
-async function ensureAppServer(socketPath: string): Promise<void> {
-  try {
-    const socket = await connectSocket(socketPath);
-    socket.destroy();
-    return;
-  } catch { /* start below */ }
-  await run("codex", ["app-server", "daemon", "start"]);
-  const socket = await connectSocket(socketPath);
-  socket.destroy();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(relayPath, resolve);
+  });
+  return async () => {
+    for (const socket of websockets.clients) socket.terminate();
+    await new Promise<void>((resolve) => websockets.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  };
 }
 
 async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (args[0] === "doctor") { await doctor(); return; }
+  const binary = await brewCodex();
+  if (args[0] === "server") { process.exitCode = await runServer(binary); return; }
   const paneId = process.env.HERDR_PANE_ID;
   const herdrSocket = process.env.HERDR_SOCKET_PATH;
   if (process.env.HERDR_ENV !== "1" || !paneId || !PANE_ID.test(paneId) || !herdrSocket || !path.isAbsolute(herdrSocket)) {
@@ -179,62 +135,72 @@ async function main(): Promise<void> {
     throw new Error("codex-micro owns --remote; remove that argument");
   }
   await access(herdrSocket);
-
-  const upstreamPath = defaultAppServerSocket();
-  await ensureAppServer(upstreamPath);
+  const herdr = new HerdrClient(herdrSocket);
+  const initial = object((await herdr.request("pane.get", { pane_id: paneId })).pane);
+  const terminalId = initial?.terminal_id;
+  if (typeof terminalId !== "string" || !terminalId) throw new Error("Herdr pane.get returned no stable terminal_id");
+  const upstreamPath = (await runningServer(binary)).socketPath;
   const relayDirectory = await mkdtemp(path.join(os.tmpdir(), "zero-kb02-relay-"));
   const relayPath = path.join(relayDirectory, "app.sock");
-  const stateDirectory = path.dirname(codexMicroStatePath("x"));
-  await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
-  const owned = new Set<string>();
+  await mkdir(path.dirname(codexMicroStatePath("x")), { recursive: true, mode: 0o700 });
   let registration = Promise.resolve();
-
-  const observer = new LifecycleObserver((state) => {
-    registration = registration.then(async () => {
-      const target = codexMicroStatePath(state.threadId);
-      const temporary = `${target}.${process.pid}.tmp`;
-      await writeFile(temporary, JSON.stringify({ ...state, paneId, pid: process.pid }), { mode: 0o600 });
-      await rename(temporary, target);
-      owned.add(target);
-      await run("herdr", [
-        "pane", "report-agent-session", paneId,
-        "--source", "herdr:codex", "--agent", "codex",
-        "--agent-session-id", state.threadId,
-      ], { ...process.env, HERDR_SOCKET_PATH: herdrSocket });
-    }).catch((error: Error) => console.error(`[codex-micro] registration: ${error.message}`));
-  });
-
-  const relay = net.createServer((client) => {
-    const upstream = net.createConnection(upstreamPath);
-    const clientTap = new WebSocketTap(true, (text) => observer.client(text));
-    const serverTap = new WebSocketTap(false, (text) => observer.server(text));
-    client.on("data", (chunk) => clientTap.push(chunk));
-    upstream.on("data", (chunk) => serverTap.push(chunk));
-    client.pipe(upstream).pipe(client);
-    client.on("error", () => upstream.destroy());
-    upstream.on("error", () => client.destroy());
-  });
-  await new Promise<void>((resolve, reject) => {
-    relay.once("error", reject);
-    relay.listen(relayPath, resolve);
-  });
+  let active: string | null = null;
+  const remove = async () => {
+    if (!active) return;
+    const target = active;
+    active = null;
+    try {
+      const state = JSON.parse(await readFile(target, "utf8"));
+      if (state.pid === process.pid) await unlink(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  };
+  const invalidate = () => {
+    registration = registration.then(remove).catch((error: Error) => console.error(`[codex-micro] cleanup: ${error.message}`));
+  };
+  const closeRelay = await startRelay(relayPath, upstreamPath, () => ({
+    observer: new LifecycleObserver((state) => {
+      registration = registration.then(async () => {
+        await remove();
+        const currentResult = await herdr.request("pane.get", { pane_id: paneId }).catch(() => ({}));
+        const current = object((currentResult as JsonObject).pane);
+        const matches = current?.terminal_id === terminalId ? [current] :
+          (await herdr.agentList()).filter((agent) => agent.terminal_id === terminalId);
+        if (matches.length !== 1 || typeof matches[0]!.pane_id !== "string") {
+          throw new Error("Cannot uniquely resolve the launcher terminal in Herdr");
+        }
+        await herdr.request("pane.report_agent_session", {
+          pane_id: matches[0]!.pane_id, source: "herdr:codex", agent: "codex", agent_session_id: state.threadId,
+        });
+        const target = codexMicroStatePath(state.threadId);
+        await writeFile(target, JSON.stringify({ threadId: state.threadId, socketPath: upstreamPath, pid: process.pid, terminalId, epoch: randomUUID() }), { flag: "wx", mode: 0o600 });
+        active = target;
+      }).catch((error: Error) => console.error(`[codex-micro] Encoder disabled: ${error.message}`));
+    }, invalidate),
+    settled: () => registration,
+    close: invalidate,
+  }));
   let code = 1;
   try {
-    const codex = spawn("codex", ["--remote", `unix://${relayPath}`, ...process.argv.slice(2)], { stdio: "inherit" });
-    code = await new Promise<number>((resolve, reject) => {
-      codex.once("error", reject);
-      codex.once("exit", (value) => resolve(value ?? 1));
-    });
-    await registration;
-  } finally {
-    await new Promise<void>((resolve) => relay.close(() => resolve()));
-    for (const target of owned) {
-      try {
-        const state = JSON.parse(await readFile(target, "utf8")) as { pid?: number };
-        if (state.pid === process.pid) await unlink(target);
-      } catch { /* already replaced or removed */ }
+    const codex = spawn(binary.binary, ["--remote", `unix://${relayPath}`, ...args], { stdio: "inherit" });
+    const stop = () => { codex.kill("SIGTERM"); };
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
+    try {
+      code = await new Promise<number>((resolve, reject) => {
+        codex.once("error", reject);
+        codex.once("exit", (value) => resolve(value ?? 1));
+      });
+    } finally {
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
     }
-    await rm(relayDirectory, { recursive: true });
+  } finally {
+    await closeRelay();
+    await registration;
+    await remove();
+    await rm(relayDirectory, { recursive: true, force: true });
   }
   process.exitCode = code;
 }

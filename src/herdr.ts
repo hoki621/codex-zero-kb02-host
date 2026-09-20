@@ -7,9 +7,6 @@ import {
   REQUEST_TIMEOUT_MS,
 } from "./socket.js";
 
-// Herdr 0.8.2 reports protocol 20 from `ping` and its bundled API schema.
-export const HERDR_PROTOCOL_MAJOR = 20;
-
 export interface RawAgent {
   agent?: unknown;
   agent_session?: unknown;
@@ -40,19 +37,6 @@ export class HerdrError extends Error {
   ) {
     super(`${code}: ${message}`);
     this.name = "HerdrError";
-  }
-}
-
-export class ProtocolVersionError extends Error {
-  constructor(
-    readonly expected: number,
-    readonly actual: number,
-    readonly version: string,
-  ) {
-    super(
-      `Herdr protocol mismatch: expected ${expected}, got ${actual} (${version})`,
-    );
-    this.name = "ProtocolVersionError";
   }
 }
 
@@ -98,19 +82,20 @@ export class HerdrClient {
   async checkProtocol(): Promise<void> {
     const result = await this.request("ping");
     const actual = result.protocol;
-    const version = typeof result.version === "string" ? result.version : "unknown";
-    if (result.type !== "pong" || typeof actual !== "number") {
+    if (result.type !== "pong" || !Number.isSafeInteger(actual) || (actual as number) < 0) {
       throw new Error("Herdr ping returned an invalid result");
     }
-    if (actual !== HERDR_PROTOCOL_MAJOR) {
-      throw new ProtocolVersionError(HERDR_PROTOCOL_MAJOR, actual, version);
-    }
+    // ping.protocol describes Herdr internals, not JSON API compatibility.
+    // Validate the required response shape at each API boundary instead.
   }
 
   async agentList(): Promise<RawAgent[]> {
     const result = await this.request("agent.list");
     if (result.type !== "agent_list" || !Array.isArray(result.agents)) {
       throw new Error("Herdr agent.list returned an invalid result");
+    }
+    if (result.agents.some((agent) => typeof agent !== "object" || agent === null || Array.isArray(agent))) {
+      throw new Error("Herdr agent.list returned an invalid agent");
     }
     return result.agents as RawAgent[];
   }
