@@ -10,17 +10,20 @@
     "node": "22.x"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "dry-run": "npm run build && node dist/src/dry-run.js",
     "start": "npm run build && node dist/src/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "smoke:codex": "npm run build && node scripts/smoke-app-server.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
+    "@types/ws": "^8.18.1",
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "serialport": "^13.0.0"
+    "serialport": "^13.0.0",
+    "ws": "^8.21.3"
   }
 }

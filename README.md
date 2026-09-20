@@ -13,28 +13,91 @@ Print a complete CDC state frame without opening a serial device:
 npm run dry-run -- WIBDUE
 ```
 
-Run the bridge from a normal terminal outside Herdr-managed panes after
-installing dependencies:
+## PC setup and startup
+
+Use Node.js 22 and the Homebrew Codex cask (`brew install --cask codex`).
+The launcher resolves `brew --prefix` → `bin/codex` → the cask's real binary;
+other `codex` entries in PATH are reported but are never used. Existing Codex
+settings, credentials, history and standalone installations are left in place.
 
 ```sh
 npm ci
 npm run build
 npm link
-codex app-server daemon start
+codex-micro doctor
 herdr plugin link --enabled "$(pwd)"
-HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v11 npm start
 ```
 
-The link command installs the fixed `hoki621.zero-kb02` manifest from this
-repository. The bridge never links or enables plugins automatically.
+The plugin command registers this repository's fixed `hoki621.zero-kb02`
+manifest. Run it once; the bridge does not modify the registry automatically.
 
-Encoder control requires Codex CLI 0.149.1 or 0.150.1 managed by its built-in
-local App Server. Run `npm link` once in this repository, then start Codex from
-any Herdr pane with `codex-micro`. It starts the existing App Server daemon when
-needed and registers the exact thread automatically, including after `/new`.
-The bridge accepts only one UUIDv7 identity that is still loaded. It does not
-install Codex hooks, edit Codex configuration, start a second daemon, or support
-desktop App and non-managed CLI panes.
+1. In a separate normal Terminal, run `codex-micro server` and leave it open.
+   It starts the brew binary's `app-server --listen unix://...` on a private,
+   dedicated socket. It does not use `app-server daemon start` or another
+   application's daemon. A second start fails without replacing the owner.
+2. In each Herdr pane that needs reasoning control, run `codex-micro`
+   (or `codex-micro resume`, `codex-micro fork`). It uses the exact binary and
+   version recorded by the server; after a brew upgrade restart the server.
+3. When the hardware is ready and device access has been approved, start the
+   bridge from another normal Terminal, outside Herdr-managed panes:
+
+   ```sh
+   HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v11 npm start
+   ```
+
+Finish remote Codex sessions, then Ctrl-C the `codex-micro server` Terminal to
+stop it. To restart, run the same command. Stopping/restarting the Host bridge
+or one CLI pane leaves this server and other CLI sessions running. A server
+restart requires restarting remote CLI connections and resuming their threads.
+Do not stop the server while another pane is using it.
+
+`codex-micro doctor` prints the resolved cask path/version, existing PATH
+binaries and the recorded server PID/socket. It opens no Herdr or USB device.
+If a crash leaves a stale server directory, use the exact directory and PID
+shown in its `server.json`: verify with `ps -p PID -o pid=,command=` and
+`lsof /exact/path/app.sock` that the recorded process/socket is no longer in
+use, then remove **only that directory** and start the server again. Never
+remove an active server's directory. A different cask version requires stopping
+the original owner first. The launcher refuses automatic stale-path deletion.
+
+## Compatibility and validation
+
+- Herdr JSON responses are validated at each used method. Its internal
+  `ping.protocol` number is informational; protocol 20 and 22 are not separate
+  JSON API versions. Unknown fields are tolerated. Invalid ping, missing
+  methods, malformed agent lists and ambiguous identities fail closed.
+- Codex CLI 0.155.1 (brew, macOS) was exercised in an isolated `CODEX_HOME` with
+  a new ephemeral thread and no model turn. `initialize`, `thread/loaded/list`,
+  `thread/read`, `model/list`, and experimental `thread/settings/update` worked
+  before the first message. Future versions must provide these response shapes;
+  missing capabilities disable reasoning control and log an error.
+- The launcher correlates start/resume/fork responses by request ID and records
+  only their exact UUIDv7. Starting another lifecycle request and disconnecting
+  remove the previous registration. No cwd, timestamp or list-order inference.
+- The `ws` library handles WebSocket framing, fragmentation and connection
+  closure. RPC requests have deadlines; notifications do not accumulate.
+- Each reasoning operation reads fresh metadata. A null effort uses the model's
+  advertised default; missing/unknown values are rejected. Updates include only
+  the thread ID and effort. The next rotation waits for the setting to become
+  visible. At most 32 operations wait; stale context and errors discard work.
+- Focus/identity/settings are checked just before sending. Herdr and Codex do
+  not offer a cross-process atomic compare-and-update; a final tiny race remains.
+- Physical keyboard mappings, USB v1 and firmware are unchanged. Approval-prompt
+  verification and the new USB contract remain tracked in parent #23–#25.
+
+```sh
+npm run typecheck
+npm test
+npm run dry-run -- WIBDUE
+# Optional: starts only an isolated brew App Server, with no model turn or device.
+npm run smoke:codex
+```
+
+The build deletes `dist` first, so removed test files cannot silently run.
+Unit/integration tests use fake Herdr/USB/App Server and a fake brew-only
+installation (including a conflicting PATH codex). No live Herdr pane input,
+USB open, firmware flash, physical display or interactive TUI verification was
+performed for this update. Full hardware acceptance remains in parent #32.
 
 Set `HERDR_SOCKET_PATH` explicitly so the bridge can reconnect after a Herdr
 server restart. `ZERO_KB02_PORT` is optional when exactly one connected USB CDC
@@ -44,6 +107,11 @@ reconciles missed Herdr events every five seconds.
 
 At runtime, `/dev/cu.usbmodem*` devices must answer `HELLO ZERO-KB02 1`.
 If more than one does, set `ZERO_KB02_PORT` to the intended path.
+
+API references: [Codex App Server](https://developers.openai.com/codex/app-server),
+[Herdr socket API](https://herdr.dev/docs/socket-api/),
+[ws](https://github.com/websockets/ws). The Codex checks use schemas generated by
+`codex-cli 0.155.1 app-server generate-json-schema --experimental`.
 
 ## v1 input mapping
 

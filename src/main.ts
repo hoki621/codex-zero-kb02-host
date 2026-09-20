@@ -31,7 +31,11 @@ const usb = new UsbCdc({
       : message.type === "encoder"
         ? reasoning.handle(message, context)
         : bindings.handle(message, context);
-    void work.catch((error: Error) =>
+    void work.then((handled) => {
+      if (!handled && message.type === "encoder" && (message.action === "CW" || message.action === "CCW")) {
+        console.error("[zero-kb02] Encoder ignored: stale focus/input, no active codex-micro registration, or unsupported thread/model response. Run codex-micro doctor.");
+      }
+    }).catch((error: Error) =>
       report("binding", error),
     );
   },

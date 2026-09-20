@@ -1,6 +1,5 @@
 import {
   HerdrClient,
-  ProtocolVersionError,
   type HerdrEvent,
   type RawAgent,
   type Subscription,
@@ -50,7 +49,12 @@ const BASE_SUBSCRIPTIONS: readonly Subscription[] = [
 
 function codexAgents(rawAgents: readonly RawAgent[]): CodexAgent[] {
   const agents: CodexAgent[] = [];
-  const seen = new Set<string>();
+  const terminalCounts = new Map<unknown, number>();
+  const paneCounts = new Map<unknown, number>();
+  for (const raw of rawAgents) {
+    terminalCounts.set(raw.terminal_id, (terminalCounts.get(raw.terminal_id) ?? 0) + 1);
+    paneCounts.set(raw.pane_id, (paneCounts.get(raw.pane_id) ?? 0) + 1);
+  }
   for (const raw of rawAgents) {
     if (
       raw.agent !== "codex" ||
@@ -58,11 +62,11 @@ function codexAgents(rawAgents: readonly RawAgent[]): CodexAgent[] {
       typeof raw.pane_id !== "string" ||
       typeof raw.workspace_id !== "string" ||
       typeof raw.tab_id !== "string" ||
-      seen.has(raw.terminal_id)
+      !raw.terminal_id || !raw.pane_id || !raw.workspace_id || !raw.tab_id ||
+      terminalCounts.get(raw.terminal_id) !== 1 || paneCounts.get(raw.pane_id) !== 1
     ) {
       continue;
     }
-    seen.add(raw.terminal_id);
     agents.push({
       terminalId: raw.terminal_id,
       paneId: raw.pane_id,
@@ -260,11 +264,6 @@ export class HerdrStateSource {
   }
 
   private handleReconnectError(error: Error): void {
-    if (error instanceof ProtocolVersionError) {
-      this.options.onError?.(error);
-      this.stop();
-      return;
-    }
     this.disconnect(error);
   }
 }
