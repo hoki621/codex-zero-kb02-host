@@ -216,8 +216,8 @@ export class ReasoningController {
     if (message.action !== "CW" && message.action !== "CCW") return false;
 
     // ponytail: bounded global queue; one physical encoder has one input stream.
-    if (this.pending >= 32) throw new Error("Encoder queue full; rotation discarded");
-    this.pending++;
+    if (this.pending + message.steps > 32) throw new Error("Encoder queue full; rotation discarded");
+    this.pending += message.steps;
     const epoch = this.queueEpoch;
     const previous = this.queue;
     let release!: () => void;
@@ -229,18 +229,23 @@ export class ReasoningController {
       if (!threadId) return false;
       await previous;
       if (epoch !== this.queueEpoch || !context.isCurrent()) return false;
-      return await this.codex.changeEffort(threadId, message.action, async () => {
-        const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
-        if (finalPaneId !== paneId) return false;
-        const finalThreadId = managedThreadId(await this.herdr.agentList(), paneId);
-        return finalThreadId === threadId && context.isCurrent();
-      });
+      for (let step = 0; step < message.steps; step++) {
+        if (epoch !== this.queueEpoch || !context.isCurrent()) return false;
+        const changed = await this.codex.changeEffort(threadId, message.action, async () => {
+          const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
+          if (finalPaneId !== paneId) return false;
+          const finalThreadId = managedThreadId(await this.herdr.agentList(), paneId);
+          return finalThreadId === threadId && context.isCurrent();
+        });
+        if (!changed) { this.queueEpoch++; return false; }
+      }
+      return true;
     } catch (error) {
       this.queueEpoch++;
       throw error;
     } finally {
       await previous;
-      this.pending--;
+      this.pending -= message.steps;
       release();
     }
   }

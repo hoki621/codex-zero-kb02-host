@@ -1,228 +1,104 @@
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { SerialPortMock } from "serialport";
-import {
-  AmbiguousDeviceError,
-  DeviceNotFoundError,
-  LineDecoder,
-  UsbCdc,
-  parseDeviceMessage,
-  selectDevice,
-  stateLine,
-  type SerialApi,
-  type SerialConnection,
-  type UsbInputContext,
-} from "../src/index.js";
-import type { HerdrState, SlotState } from "../src/state.js";
+import { LineDecoder, parseDeviceMessage, stateLine } from "../src/cdc.js";
+import { UsbCdc, type UsbInputContext } from "../src/usb.js";
+import { MOCK_PORT, MockDevice } from "../src/mock-device.js";
+import type { HerdrState } from "../src/state.js";
 
-const A = "/dev/cu.usbmodemA";
-const B = "/dev/cu.usbmodemB";
-
-class MockSerialApi implements SerialApi {
-  readonly opened: SerialPortMock[] = [];
-
-  constructor(private readonly replies: Readonly<Record<string, string>>) {
-    SerialPortMock.binding.reset();
-    for (const path of Object.keys(replies)) {
-      SerialPortMock.binding.createPort(path, { record: true });
-    }
-  }
-
-  list() {
-    return SerialPortMock.list();
-  }
-
-  open(path: string): SerialConnection {
-    const port = new SerialPortMock({ path, baudRate: 115_200 });
-    this.opened.push(port);
-    port.once("open", () => {
-      const start = port.port!.recording.length;
-      const timer = setInterval(() => {
-        if (port.port!.recording.length === start) return;
-        clearInterval(timer);
-        port.port!.emitData(`${this.replies[path] ?? "WRONG"}\n`);
-      }, 1);
-      port.once("close", () => clearInterval(timer));
-    });
-    return port as SerialConnection;
-  }
-}
-
-function slot(index: number, terminalId: string, status: SlotState["status"]): SlotState {
-  return {
-    index,
-    terminalId,
-    paneId: `pane-${index}`,
-    workspaceId: "workspace",
-    tabId: "tab",
-    status,
-    sequence: 1,
-  };
-}
-
-function state(status: SlotState["status"] = "working"): HerdrState {
-  return { online: true, slots: [slot(0, "agent-a", status), null, null, null, null, null] };
-}
-
+const state: HerdrState = { online: true, selected: 0, slots: [{ index: 0, terminalId: "t", paneId: "p", tabId: "tab", workspaceId: "w", sequence: 1, status: "working" }, null, null, null, null, null] };
 async function until(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (check()) return;
-    await delay(2);
-  }
-  assert.fail("condition was not reached");
+  for (let n = 0; n < 100; n++) { if (check()) return; await delay(3); }
+  assert.fail("condition not reached");
 }
-
-test("bounded decoder restores split/multiple lines and drops invalid or oversized input", () => {
+test("bounded decoder handles fragmented, concatenated, CRLF and overlong lines", () => {
   const lines: string[] = [];
   const decoder = new LineDecoder((line) => lines.push(line));
-  decoder.push(Buffer.from("KEY 7 0 DO"));
-  decoder.push(Buffer.from("WN\r\nJOY 7 UP\n\x01bad\n"));
-  decoder.push(Buffer.from(`${"x".repeat(128)}\nPONG 9\n`));
-  assert.deepEqual(lines, ["KEY 7 0 DOWN", "JOY 7 UP", "PONG 9"]);
+  decoder.push(Buffer.from("KEY 7 2 DO"));
+  decoder.push(Buffer.from(`WN\r\nENC 7 -2\n${"x".repeat(128)}\nPONG 9\n\x01bad\n`));
+  assert.deepEqual(lines, ["KEY 7 2 DOWN", "ENC 7 -2", "PONG 9"]);
+  decoder.push(Buffer.from("x".repeat(127) + "\n"));
+  assert.equal(lines.at(-1)?.length, 127);
 });
-
-test("device parser accepts only strict protocol events", () => {
-  assert.deepEqual(parseDeviceMessage("ESC 7 DOWN"), { type: "escape", generation: 7n, action: "DOWN" });
-  assert.deepEqual(parseDeviceMessage("POPUP 7 DOWN"), { type: "popup", generation: 7n, action: "DOWN" });
-  assert.deepEqual(parseDeviceMessage("POPUP 7 UP"), { type: "popup", generation: 7n, action: "UP" });
-  assert.deepEqual(parseDeviceMessage("NEW 7 DOWN"), { type: "newChat", generation: 7n, action: "DOWN" });
-  assert.deepEqual(parseDeviceMessage("NEW 7 UP"), { type: "newChat", generation: 7n, action: "UP" });
-  assert.deepEqual(parseDeviceMessage("APPROVE 7 DOWN"), { type: "approve", generation: 7n, action: "DOWN" });
-  assert.deepEqual(parseDeviceMessage("APPROVE 7 UP"), { type: "approve", generation: 7n, action: "UP" });
-  assert.deepEqual(parseDeviceMessage("REJECT 7 DOWN"), { type: "reject", generation: 7n, action: "DOWN" });
-  assert.deepEqual(parseDeviceMessage("REJECT 7 UP"), { type: "reject", generation: 7n, action: "UP" });
-  assert.deepEqual(parseDeviceMessage("KEY 7 5 UP"), { type: "key", generation: 7n, slot: 5, action: "UP" });
-  assert.deepEqual(parseDeviceMessage("ENC 7 CCW"), { type: "encoder", generation: 7n, action: "CCW" });
-  assert.deepEqual(parseDeviceMessage("JOY 7 LEFT"), { type: "joystick", generation: 7n, action: "LEFT" });
-  assert.equal(parseDeviceMessage("KEY 7 6 DOWN"), null);
-  assert.equal(parseDeviceMessage("KEY 7 0  DOWN"), null);
-  assert.equal(parseDeviceMessage("PONG 01"), null);
-  assert.equal(parseDeviceMessage("KEY 01 0 DOWN"), null);
-  assert.equal(parseDeviceMessage("KEY 7 00 DOWN"), null);
-  assert.equal(parseDeviceMessage("KEY 7 +0 DOWN"), null);
-  assert.equal(parseDeviceMessage("ESC 0 DOWN"), null);
-  assert.equal(parseDeviceMessage("ESC 01 DOWN"), null);
-  assert.equal(parseDeviceMessage("ESC 7 down"), null);
-  assert.equal(parseDeviceMessage("ESC 7 DOWN extra"), null);
-  assert.equal(parseDeviceMessage("POPUP 01 DOWN"), null);
-  assert.equal(parseDeviceMessage("POPUP 7 down"), null);
-  assert.equal(parseDeviceMessage("POPUP 7 DOWN extra"), null);
-  assert.equal(parseDeviceMessage("NEW 01 DOWN"), null);
-  assert.equal(parseDeviceMessage("NEW 7 down"), null);
-  assert.equal(parseDeviceMessage("NEW 7 DOWN extra"), null);
-  assert.equal(parseDeviceMessage("APPROVE 0 DOWN"), null);
-  assert.equal(parseDeviceMessage("APPROVE 7 down"), null);
-  assert.equal(parseDeviceMessage("APPROVE 7 DOWN extra"), null);
-  assert.equal(parseDeviceMessage("REJECT 01 DOWN"), null);
-  assert.equal(parseDeviceMessage("REJECT 7 ENTER"), null);
-  assert.equal(parseDeviceMessage("REJECT 7 DOWN extra"), null);
-  assert.equal(parseDeviceMessage("KEY 0 0 DOWN"), null);
-  assert.deepEqual(parseDeviceMessage("PONG 4294967295"), { type: "pong", sequence: 4_294_967_295 });
-  assert.equal(parseDeviceMessage("PONG 4294967296"), null);
-  assert.equal(parseDeviceMessage("KEY 18446744073709551616 0 DOWN"), null);
+test("major 2 physical keys and bounded signed encoder delta", () => {
+  const types = ["escape", "key", "key", "popup", "key", "key", "key", "key", "approve", "reject", "unassigned", "newChat"];
+  for (let key = 1; key <= 12; key++) for (const action of ["UP", "DOWN"]) assert.equal(parseDeviceMessage(`KEY 7 ${key} ${action}`)?.type, types[key - 1]);
+  assert.deepEqual(parseDeviceMessage("KEY 7 8 UP"), { type: "key", generation: 7n, slot: 5, action: "UP" });
+  assert.deepEqual(parseDeviceMessage("ENC 7 -32"), { type: "encoder", generation: 7n, action: "CCW", steps: 32 });
+  for (const line of ["KEY 7 0 DOWN", "KEY 7 13 DOWN", "KEY 7 02 DOWN", "KEY 07 2 DOWN", "KEY 0 2 UP", "KEY 7 2  UP", "KEY 7 2 DOWN extra", "KEY 18446744073709551616 1 UP", "ENC 7 0", "ENC 7 -0", "ENC 7 +1", "ENC 7 01", "ENC 7 33", "ENC 7 CW", "ESC 7 DOWN", "JOY 7 LEFT", "PONG 4294967296", "PONG 01"]) assert.equal(parseDeviceMessage(line), null, line);
+  assert.deepEqual(parseDeviceMessage("PONG 4294967295"), { type: "pong", sequence: 4294967295 });
+  assert.equal(stateLine(state, 7n), "STATE 7 0 WEEEEE");
+  assert.equal(stateLine({ online: false, slots: [] }, 8n), "OFFLINE 8");
 });
-
-test("selection ignores a wrong HELLO and refuses multiple verified devices", async () => {
-  const none = new MockSerialApi({ [A]: "NOT ZERO-KB02" });
-  await assert.rejects(selectDevice(none, undefined, 50), DeviceNotFoundError);
-  assert.equal(none.opened[0]!.port!.recording.toString(), "HELLO HOST 1\n");
-
-  const one = new MockSerialApi({ [A]: "NOT ZERO-KB02", [B]: "HELLO ZERO-KB02 1" });
-  assert.equal(await selectDevice(one, undefined, 50), B);
-  assert.equal(one.opened[0]!.port!.recording.toString(), "HELLO HOST 1\n");
-
-  const two = new MockSerialApi({ [A]: "HELLO ZERO-KB02 1", [B]: "HELLO ZERO-KB02 1" });
-  await assert.rejects(selectDevice(two, undefined, 50), AmbiguousDeviceError);
-  assert.equal(await selectDevice(two, B, 50), B);
-});
-
-test("USB CDC sends complete state, parses split events, and reconnects", async () => {
-  const api = new MockSerialApi({ [A]: "HELLO ZERO-KB02 1" });
-  const messages: { message: unknown; context: UsbInputContext }[] = [];
+test("serial requires an exact port and rejects a major mismatch without actions", async () => {
+  const api = new MockDevice();
+  const missing = new UsbCdc({ api, onMessage: () => assert.fail("input") });
+  await assert.rejects(missing.start(), /exact absolute port/);
+  assert.equal(api.ports.length, 0);
+  api.hello = "HELLO ZERO-KB02 1";
   const errors: Error[] = [];
+  const usb = new UsbCdc({ api, portPath: MOCK_PORT, onMessage: () => assert.fail("input"), onError: (error) => errors.push(error) });
+  await usb.start(); usb.stop();
+  assert.match(errors[0]!.message, /Incompatible/);
+  assert.deepEqual(api.port.writes, ["HELLO HOST 2\n"]);
+});
+test("one open per session, duplicate edges, stale input, offline generations and reconnect", async () => {
+  const api = new MockDevice();
+  const events: { type: string; context: UsbInputContext }[] = [];
   let generation = 40n;
-  const usb = new UsbCdc({
-    api,
-    onMessage: (message, context) => messages.push({ message, context }),
-    onError: (error) => errors.push(error),
-    helloTimeoutMs: 50,
-    retryMs: 2,
-    stateIntervalMs: 10,
-    generation: () => ++generation,
-  });
-  usb.updateState(state());
+  const usb = new UsbCdc({ api, portPath: MOCK_PORT, generation: () => ++generation,
+    onMessage: (message, context) => events.push({ type: message.type, context }), retryMs: 2, stateIntervalMs: 10 });
+  usb.updateState(state);
   await usb.start();
-  await until(() => api.opened.length === 2 && api.opened[1]!.port!.recording.includes(Buffer.from("STATE 41 - WEEEEE\n")));
-  await until(() => api.opened[1]!.port!.recording.toString().split("STATE 41 - WEEEEE\n").length >= 3);
-  assert.match(api.opened[1]!.port!.recording.toString(), /PING \d+\n/);
-
-  api.opened[1]!.port!.emitData("KEY 41 0 DO");
-  api.opened[1]!.port!.emitData("WN\nESC 41 DOWN\nJOY 41 LEFT\ninvalid\n");
-  await until(() => messages.length === 3);
-  assert.deepEqual(messages.map(({ message }) => message), [
-    { type: "key", generation: 41n, slot: 0, action: "DOWN" },
-    { type: "escape", generation: 41n, action: "DOWN" },
-    { type: "joystick", generation: 41n, action: "LEFT" },
-  ]);
-  assert.equal(messages[0]!.context.generation, 41n);
-  assert.equal(messages[0]!.context.state?.online, true);
-  assert.equal(messages[0]!.context.isCurrent(), true);
-
-  usb.updateState(state("done"));
-  assert.equal(messages[0]!.context.isCurrent(), false);
-  await until(() => api.opened[1]!.port!.recording.includes(Buffer.from("STATE 41 - DEEEEE\n")));
-  await new Promise<void>((resolve) => api.opened[1]!.close(() => resolve()));
-  await until(() => api.opened.length >= 4 && api.opened[3]!.port!.recording.includes(Buffer.from("STATE 42 - DEEEEE\n")));
-  assert.ok(errors.some((error) => error.message.includes("disconnected")));
-  usb.stop();
+  try {
+    await until(() => api.port.online);
+    assert.equal(api.ports.length, 1);
+    assert.equal(api.port.generation, "41");
+    api.port.inject("KEY 41 2 DO"); api.port.inject("WN\nKEY 41 2 DOWN\nKEY 41 2 UP\nENC 41 -3\nKEY 40 9 DOWN\n");
+    assert.deepEqual(events.map((event) => event.type), ["key", "key", "encoder"]);
+    assert.equal(events[0]!.context.isCurrent(), true);
+    usb.updateState({ ...state });
+    assert.equal(events[0]!.context.isCurrent(), true, "unchanged snapshot must not drop queued input");
+    usb.updateState({ online: false, slots: state.slots });
+    assert.equal(events[0]!.context.isCurrent(), false);
+    await until(() => api.port.writes.includes("OFFLINE 42\n"));
+    usb.updateState(state);
+    await until(() => api.port.generation === "43");
+    api.port.close();
+    await until(() => api.ports.length === 2 && api.port.online);
+    assert.equal(api.port.generation, "44");
+  } finally { usb.stop(); }
+});
+test("missing matching heartbeat and spontaneous reboot reconnect safely", async () => {
+  const api = new MockDevice();
+  const usb = new UsbCdc({ api, portPath: MOCK_PORT, onMessage: () => {}, retryMs: 2, stateIntervalMs: 5, pongTimeoutMs: 20 });
+  await usb.start();
+  try {
+    api.heartbeat = false;
+    api.port.inject("PONG 4294967295\n");
+    await until(() => api.ports.length >= 2);
+    api.heartbeat = true;
+    await until(() => api.port.writes.some((line) => line.startsWith("PING ")));
+    const count = api.ports.length;
+    api.port.inject("HELLO ZERO-KB02 2\n");
+    await until(() => api.ports.length > count);
+  } finally { usb.stop(); }
 });
 
-test("state formatter emits all six slots or OFFLINE", () => {
-  assert.equal(stateLine(state(), 7n), "STATE 7 - WEEEEE");
-  assert.equal(stateLine({ online: false, slots: [] }, 7n), "OFFLINE 7");
+test("all published device-to-host protocol vectors", async () => {
+  const vectors = await import("./protocol-vectors.js");
+  for (const line of vectors.accepted) assert.ok(parseDeviceMessage(line), line);
+  for (const line of vectors.rejected) assert.equal(parseDeviceMessage(line), null, line);
 });
 
-test("heartbeat ignores wrong PONG and accepts only the pending sequence", async () => {
-  const wrongApi = new MockSerialApi({ [A]: "HELLO ZERO-KB02 1" });
-  const wrong = new UsbCdc({
-    api: wrongApi,
-    onMessage: () => {},
-    helloTimeoutMs: 50,
-    retryMs: 2,
-    stateIntervalMs: 5,
-    pongTimeoutMs: 25,
-  });
-  await wrong.start();
-  wrongApi.opened[1]!.port!.emitData("PONG 1\n");
-  await until(() => wrongApi.opened[1]!.port!.recording.includes(Buffer.from("PING 1\n")));
-  wrongApi.opened[1]!.port!.emitData("PONG 2\n");
-  await until(() => wrongApi.opened.length >= 4);
-  wrong.stop();
-
-  const matchingApi = new MockSerialApi({ [A]: "HELLO ZERO-KB02 1" });
-  const matching = new UsbCdc({
-    api: matchingApi,
-    onMessage: () => {},
-    helloTimeoutMs: 50,
-    retryMs: 2,
-    stateIntervalMs: 5,
-    pongTimeoutMs: 25,
-  });
-  await matching.start();
-  const port = matchingApi.opened[1]!;
-  let acknowledged = 0;
-  const responder = setInterval(() => {
-    const sequences = [...port.port!.recording.toString().matchAll(/PING (\d+)\n/g)];
-    const latest = Number(sequences.at(-1)?.[1] ?? 0);
-    if (latest > acknowledged) {
-      acknowledged = latest;
-      port.port!.emitData(`PONG ${latest}\n`);
-    }
-  }, 1);
-  await delay(60);
-  clearInterval(responder);
-  assert.ok(acknowledged > 0);
-  assert.equal(matchingApi.opened.length, 2);
-  matching.stop();
+test("reconnect immediately pings and malformed hello cannot trigger a reset", async () => {
+  const api = new MockDevice();
+  const usb = new UsbCdc({ api, portPath: MOCK_PORT, retryMs: 2, onMessage: () => {} });
+  usb.updateState(state); await usb.start();
+  try {
+    api.port.inject("HELLO invalid\n");
+    await delay(5); assert.equal(api.ports.length, 1);
+    api.port.close();
+    await until(() => api.ports.length === 2 && api.port.writes.some((line) => line.startsWith("PING ")));
+  } finally { usb.stop(); }
 });
