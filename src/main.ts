@@ -4,8 +4,9 @@ import { PopupController } from "./popup.js";
 import { CodexReasoningClient, ReasoningController } from "./reasoning.js";
 import { HerdrStateSource, type HerdrState } from "./state.js";
 import { StatusPublisher } from "./status.js";
-import { UsbCdc } from "./usb.js";
+import { UsbCdc, explicitPort } from "./usb.js";
 
+const portPath = explicitPort(process.env.ZERO_KB02_PORT);
 const socketPath = process.env.HERDR_SOCKET_PATH;
 if (!socketPath) {
   throw new Error("HERDR_SOCKET_PATH is required; set it to the Herdr socket");
@@ -24,7 +25,7 @@ const popup = new PopupController(bindingClient);
 const reasoning = new ReasoningController(bindingClient, new CodexReasoningClient());
 const status = new StatusPublisher();
 const usb = new UsbCdc({
-  portPath: process.env.ZERO_KB02_PORT,
+  portPath,
   onMessage: (message, context) => {
     const work = message.type === "popup"
       ? popup.handle(message, context)

@@ -63,7 +63,7 @@ test("ENC changes only the uniquely focused managed thread after a final recheck
   };
   const controller = new ReasoningController(herdr, codex);
 
-  assert.equal(await controller.handle(message("ENC 7 CW"), context().value), true);
+  assert.equal(await controller.handle(message("ENC 7 1"), context().value), true);
   assert.deepEqual(calls, [
     "pane.current", "agent.list", `${THREAD}:CW`, "pane.current", "agent.list",
   ]);
@@ -89,27 +89,27 @@ test("ENC fails closed for stale, offline, non-rotation, ambiguous, and raced in
   const controller = new ReasoningController(herdr, codex);
 
   const stale = context();
-  assert.equal(await controller.handle(message("ENC 6 CW"), stale.value), false);
+  assert.equal(await controller.handle(message("ENC 6 1"), stale.value), false);
   assert.equal(stale.retransmits(), 1);
   const offline = context({ online: false, slots: [] });
-  assert.equal(await controller.handle(message("ENC 7 CW"), offline.value), false);
+  assert.equal(await controller.handle(message("ENC 7 1"), offline.value), false);
   assert.equal(offline.retransmits(), 1);
-  assert.equal(await controller.handle(message("ENC 7 DOWN"), context().value), false);
-  assert.equal(await controller.handle(message("ENC 7 UP"), context().value), false);
+  assert.equal(await controller.handle(message("KEY 7 11 DOWN"), context().value), false);
+  assert.equal(await controller.handle(message("KEY 7 11 UP"), context().value), false);
 
   agents = [{ agent: "codex", pane_id: "focused" }];
-  assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
+  assert.equal(await controller.handle(message("ENC 7 -1"), context().value), false);
   for (const source of ["managed", 1]) {
     agents = [{ ...managed(), agent_session: { ...managed().agent_session, source } }];
-    assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
+    assert.equal(await controller.handle(message("ENC 7 -1"), context().value), false);
   }
   agents = [{ ...managed(), agent_session: { ...managed().agent_session, value: "not-a-uuidv7" } }];
-  assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
+  assert.equal(await controller.handle(message("ENC 7 -1"), context().value), false);
   agents = [managed(), managed()];
-  assert.equal(await controller.handle(message("ENC 7 CCW"), context().value), false);
+  assert.equal(await controller.handle(message("ENC 7 -1"), context().value), false);
   agents = [managed()];
   panes = ["focused", "other"];
-  assert.equal(await controller.handle(message("ENC 7 CW"), context().value), false);
+  assert.equal(await controller.handle(message("ENC 7 1"), context().value), false);
   assert.equal(appCalls, 1);
 });
 
@@ -330,11 +330,11 @@ test("encoder queues rotations, preserves order and drops invalidated context", 
     if (directions.length === 1) { entered(); await blocked; }
     return guard();
   } });
-  const first = controller.handle(message("ENC 7 CW"), context().value);
+  const first = controller.handle(message("ENC 7 1"), context().value);
   await started;
-  const second = controller.handle(message("ENC 7 CCW"), context().value);
+  const second = controller.handle(message("ENC 7 -1"), context().value);
   const stale = context().value;
-  const third = controller.handle(message("ENC 7 CW"), stale);
+  const third = controller.handle(message("ENC 7 1"), stale);
   stale.isCurrent = () => false;
   release();
   assert.deepEqual(await Promise.all([first, second, third]), [true, true, false]);
@@ -361,4 +361,20 @@ test("unset effort uses the model default before the first turn", async () => {
     assert.equal(await new CodexAppServer(server.path).changeEffort(THREAD, "CW", async () => true), true);
     assert.equal(server.requests.find(({ method }) => method === "thread/settings/update")?.params?.effort, "high");
   } finally { await server.close(); }
+});
+
+test("a refused focus guard invalidates rotations queued before focus returns", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  const controller = new ReasoningController({
+    request: async () => ({ type: "pane_current", pane: { pane_id: "focused" } }),
+    agentList: async () => [managed()],
+  }, { changeEffort: async () => { calls++; await gate; return false; } });
+  const first = controller.handle(message("ENC 7 1"), context().value);
+  const second = controller.handle(message("ENC 7 1"), context().value);
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.deepEqual(await Promise.all([first, second]), [false, false]);
+  assert.equal(calls, 1);
 });

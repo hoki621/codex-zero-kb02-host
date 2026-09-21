@@ -272,14 +272,16 @@ test("periodic reconcile repairs missed events and reconnects a dropped subscrip
 
 test("JSON API accepts internal protocol changes but rejects malformed ping", async (t) => {
   const fake = await FakeHerdr.start();
-  const source = new HerdrStateSource({ socketPath: fake.socketPath, onState: () => {} });
+  const errors: Error[] = [];
+  const source = new HerdrStateSource({ socketPath: fake.socketPath, onState: () => {}, onError: (error) => errors.push(error) });
   t.after(() => source.stop());
   t.after(() => fake.close());
   fake.protocol = 999;
   await source.start();
   source.stop();
   fake.protocol = "22";
-  await assert.rejects(source.start(), /invalid result/);
+  await source.start();
+  assert.match(errors.at(-1)!.message, /invalid result/);
 });
 
 test("ambiguous terminal and pane identities are excluded completely", async (t) => {

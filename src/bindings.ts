@@ -1,3 +1,4 @@
+import { approvalEvidence } from "./approval.js";
 import type { DeviceMessage } from "./cdc.js";
 import type { HerdrClient, RawAgent } from "./herdr.js";
 import type { UsbInputContext } from "./usb.js";
@@ -13,12 +14,12 @@ function currentPaneId(result: Record<string, unknown>): string | null {
 }
 
 function focusedCodexAgent(agents: readonly RawAgent[], paneId: string): RawAgent | null {
-  const matches = agents.filter((agent) => agent.agent === "codex" && agent.pane_id === paneId);
-  if (matches.length !== 1) return null;
+  const matches = agents.filter((agent) => agent.pane_id === paneId);
+  if (matches.length !== 1 || matches[0]!.agent !== "codex") return null;
   const terminalId = matches[0]!.terminal_id;
   if (typeof terminalId !== "string" || terminalId.length === 0) return null;
   const identities = agents.filter(
-    (agent) => agent.agent === "codex" && agent.terminal_id === terminalId,
+    (agent) => agent.terminal_id === terminalId,
   );
   return identities.length === 1 ? matches[0]! : null;
 }
@@ -31,7 +32,7 @@ function liveAgent(agents: readonly RawAgent[], terminalId: string): RawAgent | 
       typeof agent.pane_id === "string" &&
       agent.pane_id.length > 0,
   );
-  return matches.length === 1 ? matches[0]! : null;
+  return matches.length === 1 && agents.filter((candidate) => candidate.terminal_id === terminalId).length === 1 && agents.filter((candidate) => candidate.pane_id === matches[0]!.pane_id).length === 1 ? matches[0]! : null;
 }
 
 function acceptsTextInput(agent: RawAgent): boolean {
@@ -39,9 +40,18 @@ function acceptsTextInput(agent: RawAgent): boolean {
 }
 
 export class SafeBindings {
-  constructor(private readonly herdr: FocusClient) {}
+  private busy = false;
+  private used = new Map<string, string>();
+  constructor(private readonly herdr: FocusClient, private readonly evidence = approvalEvidence) {}
 
   async handle(message: DeviceMessage, context: UsbInputContext): Promise<boolean> {
+    if (this.busy) return false;
+    this.busy = true;
+    try { return await this.dispatch(message, context); }
+    finally { this.busy = false; }
+  }
+
+  private async dispatch(message: DeviceMessage, context: UsbInputContext): Promise<boolean> {
     if (message.type === "pong") return false;
     if (message.generation !== context.generation || !context.state?.online) {
       context.retransmit();
@@ -65,22 +75,24 @@ export class SafeBindings {
       }
       if (message.type === "newChat" && !acceptsTextInput(agent)) return false;
       if (approvalKey !== null && agent.agent_status !== "blocked") return false;
-      const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
-      if (finalPaneId !== paneId) return false;
-      if (message.type !== "escape") {
-        const finalAgent = focusedCodexAgent(await this.herdr.agentList(), paneId);
-        if (
-          !finalAgent ||
-          finalAgent.terminal_id !== terminalId ||
-          (message.type === "newChat"
-            ? !acceptsTextInput(finalAgent)
-            : finalAgent.agent_status !== "blocked") ||
-          context.state.slots.filter((slot) => slot?.terminalId === terminalId).length !== 1 ||
-          !context.isCurrent()
-        ) return false;
-      } else if (!context.isCurrent()) {
+      const evidence = approvalKey === null ? null : await this.evidence(this.herdr, agent);
+      if (approvalKey !== null && (!evidence || this.used.get(terminalId) === evidence.token)) {
+        console.error("[zero-kb02] Approval key disabled: unsupported or ambiguous pending command/prompt, or already attempted");
         return false;
       }
+      const finalPaneId = currentPaneId(await this.herdr.request("pane.current", {}));
+      if (finalPaneId !== paneId) return false;
+      const finalAgent = focusedCodexAgent(await this.herdr.agentList(), paneId);
+      if (!finalAgent || finalAgent.terminal_id !== terminalId ||
+          (message.type === "newChat" && !acceptsTextInput(finalAgent)) ||
+          (approvalKey !== null && finalAgent.agent_status !== "blocked")) return false;
+      if (approvalKey !== null) {
+        if (JSON.stringify(finalAgent.agent_session) !== JSON.stringify(agent.agent_session) ||
+            JSON.stringify(await this.evidence(this.herdr, finalAgent)) !== JSON.stringify(evidence)) return false;
+        for (const terminal of this.used.keys()) if (!context.state.slots.some((slot) => slot?.terminalId === terminal)) this.used.delete(terminal);
+        this.used.set(terminalId, evidence!.token);
+      }
+      if (!context.isCurrent()) return false;
       if (message.type === "escape") {
         await this.herdr.request("agent.send_keys", { target: paneId, keys: ["esc"] });
       } else if (message.type === "newChat") {

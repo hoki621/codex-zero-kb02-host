@@ -29,6 +29,7 @@ export interface SlotState extends CodexAgent {
 
 export interface HerdrState {
   online: boolean;
+  selected?: number | null;
   slots: readonly (SlotState | null)[];
 }
 
@@ -108,6 +109,7 @@ export class HerdrStateSource {
   private reconciling: Promise<void> | null = null;
   private reconcileQueued = false;
   private rebuilding = false;
+  private snapshotSequence = 0;
   private stopped = true;
 
   constructor(private readonly options: HerdrStateOptions) {
@@ -119,12 +121,7 @@ export class HerdrStateSource {
   async start(): Promise<void> {
     if (!this.stopped) return;
     this.stopped = false;
-    try {
-      await this.establish();
-    } catch (error) {
-      this.stop();
-      throw error;
-    }
+    await this.establish();
   }
 
   stop(): void {
@@ -139,32 +136,40 @@ export class HerdrStateSource {
   }
 
   private async establish(): Promise<void> {
-    await this.client.checkProtocol();
-    const before = codexAgents(await this.client.agentList());
     const generation = ++this.subscriptionGeneration;
-    const subscriptions = [
-      ...BASE_SUBSCRIPTIONS,
-      ...before.map((agent) => ({
-        type: "pane.agent_status_changed",
-        pane_id: agent.paneId,
-      })),
-    ];
-    const close = await this.client.subscribe(
-      subscriptions,
-      (event) => this.onEvent(generation, event),
-      () => this.onSubscriptionClosed(generation),
-    );
-    if (this.stopped || generation !== this.subscriptionGeneration) {
-      close();
-      return;
-    }
-    this.closeSubscription = close;
-    this.subscribedPanes = paneKey(before);
+    try {
+      await this.client.checkProtocol();
+      const before = codexAgents(await this.client.agentList());
+      if (this.stopped || generation !== this.subscriptionGeneration) return;
+      const subscriptions = [
+        ...BASE_SUBSCRIPTIONS,
+        ...before.map((agent) => ({
+          type: "pane.agent_status_changed",
+          pane_id: agent.paneId,
+        })),
+      ];
+      const close = await this.client.subscribe(
+        subscriptions,
+        (event) => this.onEvent(generation, event),
+        () => this.onSubscriptionClosed(generation),
+      );
+      if (this.stopped || generation !== this.subscriptionGeneration) {
+        close();
+        return;
+      }
+      this.closeSubscription = close;
+      this.subscribedPanes = paneKey(before);
 
-    const after = codexAgents(await this.client.agentList());
-    this.applyAgents(after);
-    this.startReconcileTimer();
-    if (paneKey(after) !== this.subscribedPanes) this.rebuildSubscription();
+      const snapshot = ++this.snapshotSequence;
+      const after = codexAgents(await this.client.agentList());
+      if (this.stopped || generation !== this.subscriptionGeneration) return;
+      await this.applyAgents(after, generation, snapshot);
+      if (this.stopped || generation !== this.subscriptionGeneration) return;
+      this.startReconcileTimer();
+      if (paneKey(after) !== this.subscribedPanes) this.rebuildSubscription();
+    } catch (error) {
+      if (!this.stopped && generation === this.subscriptionGeneration) this.disconnect(error as Error);
+    }
   }
 
   private startReconcileTimer(): void {
@@ -191,16 +196,20 @@ export class HerdrStateSource {
       this.reconcileQueued = true;
       return this.reconciling;
     }
+    const generation = this.subscriptionGeneration;
+    const snapshot = ++this.snapshotSequence;
     this.reconciling = this.client
       .agentList()
-      .then((raw) => {
+      .then(async (raw) => {
+        if (this.stopped || generation !== this.subscriptionGeneration) return;
         const agents = codexAgents(raw);
-        this.applyAgents(agents);
+        await this.applyAgents(agents, generation, snapshot);
+        if (this.stopped || generation !== this.subscriptionGeneration) return;
         if (paneKey(agents) !== this.subscribedPanes) {
           this.rebuildSubscription();
         }
       })
-      .catch((error: Error) => this.disconnect(error))
+      .catch((error: Error) => { if (generation === this.subscriptionGeneration) this.disconnect(error); })
       .finally(() => {
         this.reconciling = null;
         if (this.reconcileQueued) {
@@ -211,7 +220,14 @@ export class HerdrStateSource {
     return this.reconciling;
   }
 
-  private applyAgents(agents: readonly CodexAgent[]): void {
+  private async applyAgents(agents: readonly CodexAgent[], generation: number, snapshot: number): Promise<void> {
+    if (this.stopped || generation !== this.subscriptionGeneration || snapshot !== this.snapshotSequence) return;
+    let paneId: unknown;
+    try {
+      const result = await this.client.request("pane.current");
+      if (result.type === "pane_current" && typeof result.pane === "object" && result.pane) paneId = (result.pane as Record<string, unknown>).pane_id;
+    } catch { /* Selection is optional; state display remains available. */ }
+    if (this.stopped || generation !== this.subscriptionGeneration || snapshot !== this.snapshotSequence) return;
     this.agents = new Map(agents.map((agent) => [agent.terminalId, agent]));
     this.slotIds = assignStickySlots(
       this.slotIds,
@@ -223,6 +239,11 @@ export class HerdrStateSource {
     );
     this.options.onState({
       online: true,
+      selected: (() => {
+        const matches = agents.filter((agent) => agent.paneId === paneId);
+        const index = matches.length === 1 ? this.slotIds.indexOf(matches[0]!.terminalId) : -1;
+        return index >= 0 ? index : null;
+      })(),
       slots: this.slotIds.map((terminalId, index) => {
         const agent = terminalId === null ? undefined : this.agents.get(terminalId);
         return agent ? { ...agent, index } : null;
@@ -237,7 +258,6 @@ export class HerdrStateSource {
     this.closeSubscription?.();
     this.closeSubscription = null;
     void this.establish()
-      .catch((error: Error) => this.handleReconnectError(error))
       .finally(() => {
         this.rebuilding = false;
       });
@@ -257,13 +277,8 @@ export class HerdrStateSource {
     this.options.onError?.(error);
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      void this.establish().catch((nextError: Error) =>
-        this.handleReconnectError(nextError),
-      );
+      void this.establish();
     }, this.retryMs);
   }
 
-  private handleReconnectError(error: Error): void {
-    this.disconnect(error);
-  }
 }

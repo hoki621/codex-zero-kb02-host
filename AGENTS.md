@@ -11,3 +11,8 @@
 - Preserve complete MIT notices and pinned provenance for imported upstream code.
 - Run focused type, unit, and build checks before committing.
 - Do not update the parent submodule pointer; the integration owner does that.
+
+- USB major 2 uses physical KEY 1–12 and signed ENC deltas; reject major 1.
+- Require an exact explicit port. Development tools default to mocks.
+- K9/K10 require exact pending-command and supported-screen evidence, never
+  blocked status alone. Persistence failure must invalidate the owner.

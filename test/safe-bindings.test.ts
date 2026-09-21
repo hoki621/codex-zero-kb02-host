@@ -60,11 +60,11 @@ test("K2,K3,K5-K8 route slots 0-5 through fresh terminal-to-pane resolution", as
       return {};
     },
   };
-  const router = new SafeBindings(herdr);
+  const router = new SafeBindings(herdr, async () => ({ token: "request1", screen: "screen1" }));
   const { context } = inputContext(online());
 
   for (let index = 0; index < 6; index++) {
-    assert.equal(await router.handle(parsed(`KEY 7 ${index} DOWN`), context), true);
+    assert.equal(await router.handle(parsed(`KEY 7 ${[2,3,5,6,7,8][index]} DOWN`), context), true);
   }
   assert.deepEqual(requests, Array.from({ length: 6 }, (_, index) => ({
     method: "agent.focus",
@@ -86,19 +86,20 @@ test("K1 Escape uses focused mapped Codex pane and a final focus recheck", async
         : {};
     },
   };
-  const router = new SafeBindings(herdr);
+  const router = new SafeBindings(herdr, async () => ({ token: "request1", screen: "screen1" }));
 
-  assert.equal(await router.handle(parsed("ESC 7 DOWN"), inputContext(online()).context), true);
+  assert.equal(await router.handle(parsed("KEY 7 1 DOWN"), inputContext(online()).context), true);
   assert.deepEqual(calls, [
     { method: "pane.current", params: {} },
     { method: "agent.list", params: {} },
     { method: "pane.current", params: {} },
+    { method: "agent.list", params: {} },
     { method: "agent.send_keys", params: { target: "focused-pane", keys: ["esc"] } },
   ]);
 });
 
 test("K9/K10 send one fixed key to the focused mapped blocked Codex pane", async () => {
-  for (const [line, key] of [["APPROVE 7 DOWN", "y"], ["REJECT 7 DOWN", "n"]] as const) {
+  for (const [line, key] of [["KEY 7 9 DOWN", "y"], ["KEY 7 10 DOWN", "n"]] as const) {
     const calls: { method: string; params: Record<string, unknown> }[] = [];
     let lists = 0;
     const herdr = {
@@ -113,7 +114,7 @@ test("K9/K10 send one fixed key to the focused mapped blocked Codex pane", async
           : {};
       },
     };
-    const router = new SafeBindings(herdr);
+    const router = new SafeBindings(herdr, async () => ({ token: "request1", screen: "screen1" }));
 
     assert.equal(await router.handle(parsed(line), inputContext(online()).context), true);
     assert.equal(lists, 2);
@@ -126,7 +127,7 @@ test("K9/K10 send one fixed key to the focused mapped blocked Codex pane", async
 });
 
 test("K9/K10 reject non-blocked and changed final agents", async () => {
-  for (const line of ["APPROVE 7 DOWN", "REJECT 7 DOWN"]) {
+  for (const line of ["KEY 7 9 DOWN", "KEY 7 10 DOWN"]) {
     for (const status of ["idle", "working", "done", "unknown", undefined]) {
       const sent: string[] = [];
       const router = new SafeBindings({
@@ -135,7 +136,7 @@ test("K9/K10 reject non-blocked and changed final agents", async () => {
           if (method === "agent.send_keys") sent.push(method);
           return { type: "pane_current", pane: { pane_id: "focused-pane" } };
         },
-      });
+      }, async () => ({ token: "request1", screen: "screen1" }));
       assert.equal(await router.handle(parsed(line), inputContext(online()).context), false);
       assert.deepEqual(sent, []);
     }
@@ -155,7 +156,7 @@ test("K9/K10 reject non-blocked and changed final agents", async () => {
           if (method === "agent.send_keys") sent.push(method);
           return { type: "pane_current", pane: { pane_id: "focused-pane" } };
         },
-      });
+      }, async () => ({ token: "request1", screen: "screen1" }));
       assert.equal(await router.handle(parsed(line), inputContext(online()).context), false);
       assert.deepEqual(sent, []);
     }
@@ -178,9 +179,9 @@ test("K12 New Chat sends only the fixed command when focused status accepts text
           : {};
       },
     };
-    const router = new SafeBindings(herdr);
+    const router = new SafeBindings(herdr, async () => ({ token: "request1", screen: "screen1" }));
 
-    assert.equal(await router.handle(parsed("NEW 7 DOWN"), inputContext(online()).context), true);
+    assert.equal(await router.handle(parsed("KEY 7 12 DOWN"), inputContext(online()).context), true);
     assert.equal(lists, 2);
     assert.deepEqual(calls, [
       { method: "pane.current", params: {} },
@@ -200,7 +201,7 @@ test("K12 New Chat rejects non-input agent statuses", async () => {
         return { type: "pane_current", pane: { pane_id: "focused-pane" } };
       },
     });
-    assert.equal(await router.handle(parsed("NEW 7 DOWN"), inputContext(online()).context), false);
+    assert.equal(await router.handle(parsed("KEY 7 12 DOWN"), inputContext(online()).context), false);
     assert.deepEqual(sent, []);
   }
 });
@@ -222,12 +223,12 @@ test("K12 New Chat rejects final status or terminal identity changes", async () 
         return { type: "pane_current", pane: { pane_id: "focused-pane" } };
       },
     });
-    assert.equal(await router.handle(parsed("NEW 7 DOWN"), inputContext(online()).context), false);
+    assert.equal(await router.handle(parsed("KEY 7 12 DOWN"), inputContext(online()).context), false);
     assert.deepEqual(sent, []);
   }
 });
 
-test("stale, offline, empty, UP, ENC, and JOY inputs perform no operation", async () => {
+test("stale, offline, empty, UP, ENC, and reserved inputs perform no operation", async () => {
   let lists = 0;
   const requests: string[] = [];
   const router = new SafeBindings({
@@ -235,30 +236,30 @@ test("stale, offline, empty, UP, ENC, and JOY inputs perform no operation", asyn
     request: async (method: string) => { requests.push(method); return {}; },
   });
   const current = inputContext(online());
-  assert.equal(await router.handle(parsed("KEY 6 0 DOWN"), current.context), false);
-  assert.equal(await router.handle(parsed("ESC 6 DOWN"), current.context), false);
-  assert.equal(await router.handle(parsed("NEW 6 DOWN"), current.context), false);
-  assert.equal(await router.handle(parsed("APPROVE 6 DOWN"), current.context), false);
-  assert.equal(await router.handle(parsed("REJECT 6 DOWN"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 6 2 DOWN"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 6 1 DOWN"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 6 12 DOWN"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 6 9 DOWN"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 6 10 DOWN"), current.context), false);
   assert.equal(current.retransmits(), 5);
 
   const offline = inputContext({ online: false, slots: [] });
-  assert.equal(await router.handle(parsed("KEY 7 0 DOWN"), offline.context), false);
-  assert.equal(await router.handle(parsed("ESC 7 DOWN"), offline.context), false);
-  assert.equal(await router.handle(parsed("NEW 7 DOWN"), offline.context), false);
-  assert.equal(await router.handle(parsed("APPROVE 7 DOWN"), offline.context), false);
-  assert.equal(await router.handle(parsed("REJECT 7 DOWN"), offline.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 2 DOWN"), offline.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 1 DOWN"), offline.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 12 DOWN"), offline.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 9 DOWN"), offline.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 10 DOWN"), offline.context), false);
   assert.equal(offline.retransmits(), 5);
 
   const empty = inputContext(online([null, null, null, null, null, null]));
-  assert.equal(await router.handle(parsed("KEY 7 0 DOWN"), empty.context), false);
-  assert.equal(await router.handle(parsed("KEY 7 0 UP"), current.context), false);
-  assert.equal(await router.handle(parsed("ESC 7 UP"), current.context), false);
-  assert.equal(await router.handle(parsed("NEW 7 UP"), current.context), false);
-  assert.equal(await router.handle(parsed("APPROVE 7 UP"), current.context), false);
-  assert.equal(await router.handle(parsed("REJECT 7 UP"), current.context), false);
-  assert.equal(await router.handle(parsed("ENC 7 CW"), current.context), false);
-  assert.equal(await router.handle(parsed("JOY 7 LEFT"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 2 DOWN"), empty.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 2 UP"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 1 UP"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 12 UP"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 9 UP"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 10 UP"), current.context), false);
+  assert.equal(await router.handle(parsed("ENC 7 1"), current.context), false);
+  assert.equal(await router.handle(parsed("KEY 7 11 DOWN"), current.context), false);
   assert.equal(lists, 0);
   assert.deepEqual(requests, []);
 });
@@ -283,12 +284,12 @@ test("focused text controls reject unsafe focus, identity, mapping, and final re
     { name: "mapping invalidated", agents: [agent(0, "focused-pane")], invalidateBeforeFinal: true },
   ];
 
-  for (const line of ["ESC 7 DOWN", "NEW 7 DOWN", "APPROVE 7 DOWN", "REJECT 7 DOWN"]) {
+  for (const line of ["KEY 7 1 DOWN", "KEY 7 12 DOWN", "KEY 7 9 DOWN", "KEY 7 10 DOWN"]) {
     for (const testCase of cases) {
       const sent: string[] = [];
       const current = inputContext(testCase.state ?? online());
       let paneRead = 0;
-      const status = line.startsWith("NEW") ? "idle" : line.startsWith("APPROVE") || line.startsWith("REJECT") ? "blocked" : undefined;
+      const status = line === "KEY 7 12 DOWN" ? "idle" : ["KEY 7 9 DOWN", "KEY 7 10 DOWN"].includes(line) ? "blocked" : undefined;
       const agents = status === undefined
         ? testCase.agents
         : testCase.agents.map((candidate) => ({ ...candidate, agent_status: status }));
@@ -303,7 +304,7 @@ test("focused text controls reject unsafe focus, identity, mapping, and final re
           const paneId = (testCase.panes ?? ["focused-pane", "focused-pane"])[paneRead++] ?? null;
           return { type: "pane_current", pane: paneId === null ? null : { pane_id: paneId } };
         },
-      });
+      }, async () => ({ token: "request1", screen: "screen1" }));
       assert.equal(await router.handle(parsed(line), current.context), false, `${line}: ${testCase.name}`);
       assert.deepEqual(sent, [], `${line}: ${testCase.name}`);
     }
@@ -316,19 +317,19 @@ test("disappeared, duplicate, or remapped agents are rejected before focus", asy
     agentList: async () => [],
     request: async (method: string) => { requests.push(method); return {}; },
   });
-  assert.equal(await missingRouter.handle(parsed("KEY 7 0 DOWN"), inputContext(online()).context), false);
+  assert.equal(await missingRouter.handle(parsed("KEY 7 2 DOWN"), inputContext(online()).context), false);
 
   const duplicateRouter = new SafeBindings({
     agentList: async () => [agent(0, "pane-a"), agent(0, "pane-b")],
     request: async (method: string) => { requests.push(method); return {}; },
   });
-  assert.equal(await duplicateRouter.handle(parsed("KEY 7 0 DOWN"), inputContext(online()).context), false);
+  assert.equal(await duplicateRouter.handle(parsed("KEY 7 2 DOWN"), inputContext(online()).context), false);
 
   const changed = inputContext(online());
   const changedRouter = new SafeBindings({
     agentList: async () => { changed.invalidate(); return [agent(0)]; },
     request: async (method: string) => { requests.push(method); return {}; },
   });
-  assert.equal(await changedRouter.handle(parsed("KEY 7 0 DOWN"), changed.context), false);
+  assert.equal(await changedRouter.handle(parsed("KEY 7 2 DOWN"), changed.context), false);
   assert.deepEqual(requests, []);
 });

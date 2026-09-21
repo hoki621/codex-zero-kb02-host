@@ -16,7 +16,7 @@ test("brew-only launcher and dedicated server share a binary and clean up their 
   const directory = await mkdtemp("/tmp/zkb-runtime-");
   const prefix = path.join(directory, "brew");
   const bin = path.join(prefix, "bin");
-  const cask = path.join(prefix, "Caskroom/codex/1.2.3/bin");
+  const cask = path.join(prefix, "Caskroom/codex/0.155.1/bin");
   const trace = path.join(directory, "trace.jsonl");
   await mkdir(bin, { recursive: true });
   await mkdir(cask, { recursive: true });
@@ -26,13 +26,17 @@ test("brew-only launcher and dedicated server share a binary and clean up their 
 const fs = require('node:fs');
 const { WebSocket, WebSocketServer } = require(${JSON.stringify(wsModule)});
 const args = process.argv.slice(2);
-if (args[0] === '--version') { console.log('codex-cli 1.2.3'); process.exit(); }
+if (args[0] === '--version') { console.log('codex-cli 0.155.1'); process.exit(); }
 fs.appendFileSync(process.env.TRACE, JSON.stringify({binary:process.argv[1],args})+'\\n');
 if (args[0] === 'app-server') {
   const server = require('node:http').createServer();
   const wss = new WebSocketServer({server});
   wss.on('connection', ws => ws.on('message', data => {
     const message = JSON.parse(data.toString());
+    if(message.method==='probe/fail-persistence') {
+      ws.send(JSON.stringify({id:99,method:'item/commandExecution/requestApproval',params:{threadId:'01901234-5678-7abc-8def-0123456789ab',availableDecisions:['accept','cancel']}}));
+      return;
+    }
     ws.send(JSON.stringify({id:message.id,result:{thread:{id:'01901234-5678-7abc-8def-0123456789ab'},model:'m',reasoningEffort:null}}));
   }));
   server.listen(args[2].slice(7));
@@ -41,7 +45,13 @@ if (args[0] === 'app-server') {
   if(args[0]!=='--remote')process.exit(3);
   const ws = new WebSocket('ws+unix://'+args[1].slice(7)+':/');
   ws.on('open',()=>ws.send(JSON.stringify({id:1,method:'thread/start'})));
-  ws.on('message',()=>ws.close());
+  ws.on('message',()=>{
+    if(args.includes('persist-failure')) {
+      const dir=require('node:path').join(process.env.TMPDIR,'zero-kb02-codex-'+process.getuid());
+      fs.mkdirSync(require('node:path').join(dir,'01901234-5678-7abc-8def-0123456789ab.json.approval'));
+      ws.send(JSON.stringify({method:'probe/fail-persistence'}));
+    } else ws.close();
+  });
   ws.on('close',()=>process.exit());
   ws.on('error',()=>process.exit(4));
 }
@@ -101,8 +111,17 @@ if (args[0] === 'app-server') {
     assert.ok(commands.every((command) => command.binary === resolvedBinary));
     assert.deepEqual(commands[0].args.slice(0, 2), ["app-server", "--listen"]);
     assert.equal(commands[1].args[0], "--remote");
+    assert.ok(commands[1].args.includes('tui.keymap.approval.approve=["y"]'));
     assert.equal(server.exitCode, null, "CLI exit must not stop the dedicated server");
     await assert.rejects(readFile(path.join(directory, `zero-kb02-codex-${process.getuid?.() ?? "user"}`, "01901234-5678-7abc-8def-0123456789ab.json")), /ENOENT/);
+    await assert.rejects(execute(process.execPath, [launcher, "persist-failure"], { env, timeout: 5_000 }),
+      (error: unknown) => {
+        const failed = error as { code: number; stderr: string };
+        assert.equal(failed.code, 1);
+        assert.match(failed.stderr, /registration persistence failed; stopping launcher/);
+        return true;
+      });
+    assert.equal(server.exitCode, null, "persistence failure must leave shared server running");
   } finally {
     server.kill("SIGTERM");
     await exited;
