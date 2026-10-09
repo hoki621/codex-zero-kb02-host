@@ -12,18 +12,18 @@ Install the parent's mise tools, Herdr and Homebrew Codex CLI first. From this d
 npm ci
 npm run build
 herdr plugin link --enabled "$PWD"
-TMPDIR=/tmp node dist/src/codex-micro.js doctor
+node dist/src/codex-micro.js doctor
 ```
 
-Use the same `TMPDIR=/tmp` everywhere. In separate terminals:
+Start Herdr normally; use this launcher for device-controlled Codex sessions. No `TMPDIR` override is needed. In separate terminals:
 
 ```sh
 # Normal Terminal: keep the server running.
-TMPDIR=/tmp node dist/src/codex-micro.js server
+node dist/src/codex-micro.js server
 # Each Herdr pane: append resume or fork when needed.
-TMPDIR=/tmp node /absolute/path/to/host/dist/src/codex-micro.js
+node /absolute/path/to/host/dist/src/codex-micro.js
 # Another normal Terminal: specify the exact device port.
-TMPDIR=/tmp HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" \
+HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" \
 ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v21 node dist/src/main.js
 ```
 
@@ -53,6 +53,8 @@ Effort updates include only thread ID and effort, never the model. Queues are bo
 The bridge reconnects to the exact configured port/socket and resends state. Release held keys after reconnect. Use `lsof /exact/port` to identify your own monitor before closing it.
 
 For a stale server directory, inspect the PID/socket in its `server.json` with `ps -p PID -o pid=,command=` and `lsof /exact/path/app.sock`. Remove only that directory after confirming neither is in use. Never remove an active server directory. A launcher crash can leave a `.json.lock`; inspect the adjacent registration PID and running launchers before removing that lock.
+
+Server and thread registrations use `~/.local/state/herdr/plugins/hoki621.zero-kb02/`, shared with the status plugin. After updating from the TMPDIR-based version, finish the old CLI sessions and stop the old bridge/server, then restart all three. Existing processes are not migrated or stopped automatically.
 
 ## Legacy hook migration
 

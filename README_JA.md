@@ -12,18 +12,18 @@ Herdr・USB CDC major 2・専用Codex App Serverを接続するNode.js 22 / Type
 npm ci
 npm run build
 herdr plugin link --enabled "$PWD"
-TMPDIR=/tmp node dist/src/codex-micro.js doctor
+node dist/src/codex-micro.js doctor
 ```
 
-すべて同じ`TMPDIR=/tmp`を使い、別々のTerminalで実行します。
+Herdrは通常どおり起動し、連携用CodexだけこのLauncherを使います。`TMPDIR`指定は不要です。別々のTerminalで実行します。
 
 ```sh
 # 通常Terminal: serverを起動したままにする
-TMPDIR=/tmp node dist/src/codex-micro.js server
+node dist/src/codex-micro.js server
 # Herdrの各ペイン: 再開はresume、分岐はforkを末尾に付ける
-TMPDIR=/tmp node /absolute/path/to/host/dist/src/codex-micro.js
+node /absolute/path/to/host/dist/src/codex-micro.js
 # 別の通常Terminal: 実機の完全なport名を指定する
-TMPDIR=/tmp HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" \
+HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" \
 ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v21 node dist/src/main.js
 ```
 
@@ -53,6 +53,8 @@ K9/K10はCodex CLI **0.155.1・0.160.0のみ対応**。単独command承認、正
 bridgeは指定したport・socketへ再接続し、状態を再送します。再接続後は押していたキーを離してから使います。port使用中は`lsof /exact/port`で所有者を確認して、自分のmonitorを終了してください。
 
 serverの残存ディレクトリが報告されたら、`server.json`のPID/socketを`ps -p PID -o pid=,command=`と`lsof /exact/path/app.sock`で確認します。どちらも使われていない場合だけ、そのディレクトリを削除します。稼働中のserverは削除しません。Launcherの異常終了で`.json.lock`が残った場合も、隣の登録ファイルのPIDと稼働中Launcherを確認してから該当lockだけ削除します。
+
+serverと会話登録は状態pluginと同じ`~/.local/state/herdr/plugins/hoki621.zero-kb02/`を使います。旧TMPDIR版から更新する場合は利用中のCLIを終了し、旧bridge/serverを止めてからすべて再起動します。既存プロセスの自動移行・停止はしません。
 
 ## 旧hookの移行
 

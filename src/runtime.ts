@@ -36,6 +36,7 @@ export async function runningServer(binary: Binary, socketPath = defaultAppServe
 // The foreground supervisor owns this server. Restarting the USB bridge never stops it.
 export async function runServer(binary: Binary, socketPath = defaultAppServerSocket()): Promise<number> {
   const directory = path.dirname(socketPath);
+  await mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
   try { await mkdir(directory, { mode: 0o700 }); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
