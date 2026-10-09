@@ -1,4 +1,5 @@
 import { PROTOCOL_MAJOR } from "./cdc.js";
+import { APPROVAL_VERSIONS } from "./approval.js";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -75,7 +76,7 @@ export async function runServer(binary: Binary, socketPath = defaultAppServerSoc
 
 export async function doctor(): Promise<void> {
   const binary = await brewCodex();
-  console.log(JSON.stringify({ ...binary, protocolMajor: PROTOCOL_MAJOR, herdrSocket: process.env.HERDR_SOCKET_PATH ?? "not configured", approval: binary.version === "codex-cli 0.155.1" ? "requires live relay request + verified command prompt" : "disabled: unsupported Codex approval UI version" }, null, 2));
+  console.log(JSON.stringify({ ...binary, protocolMajor: PROTOCOL_MAJOR, herdrSocket: process.env.HERDR_SOCKET_PATH ?? "not configured", approval: APPROVAL_VERSIONS.has(binary.version) ? "requires live relay request + verified command prompt" : "disabled: unsupported Codex approval UI version" }, null, 2));
   console.log(`Dedicated socket: ${defaultAppServerSocket()}`);
   const candidates = await Promise.allSettled((process.env.PATH ?? "").split(path.delimiter).map((entry) => realpath(path.join(entry, "codex"))));
   console.log(`PATH codex binaries: ${[...new Set(candidates.flatMap((result) => result.status === "fulfilled" ? [result.value] : []))].join(", ")}`);

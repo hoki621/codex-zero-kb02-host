@@ -89,7 +89,7 @@ the original owner first. The launcher refuses automatic stale-path deletion.
   TUI prompt twice. Unknown versions, multiple requests, questions, file/network
   approvals and changed evidence disable these keys with a reason. A request is
   attempted only once, including a failed send.
-- Approval keys are supported only for `codex-cli 0.155.1`. The launcher pins
+- Approval keys are supported only for `codex-cli 0.155.1` and `0.160.0`. The launcher pins
   `tui.keymap.approval.approve=["y"]` and `decline=["n","esc"]` with process-only
   `-c` overrides. User configuration files are not edited. Native TUI controls
   remain available for unsupported prompts.

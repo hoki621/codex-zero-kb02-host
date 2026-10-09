@@ -26,7 +26,7 @@ test("brew-only launcher and dedicated server share a binary and clean up their 
 const fs = require('node:fs');
 const { WebSocket, WebSocketServer } = require(${JSON.stringify(wsModule)});
 const args = process.argv.slice(2);
-if (args[0] === '--version') { console.log('codex-cli 0.155.1'); process.exit(); }
+if (args[0] === '--version') { console.log('codex-cli 0.160.0'); process.exit(); }
 fs.appendFileSync(process.env.TRACE, JSON.stringify({binary:process.argv[1],args})+'\\n');
 if (args[0] === 'app-server') {
   const server = require('node:http').createServer();

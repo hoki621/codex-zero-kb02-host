@@ -3,6 +3,7 @@ import { codexMicroStatePath, processExists } from "./reasoning.js";
 import type { HerdrClient, RawAgent } from "./herdr.js";
 
 export const APPROVAL_VERSION = "codex-cli 0.155.1";
+export const APPROVAL_VERSIONS = new Set([APPROVAL_VERSION, "codex-cli 0.160.0"]);
 export const APPROVAL_KEYMAP_ARGS = ["-c", 'tui.keymap.approval.approve=["y"]', "-c", 'tui.keymap.approval.decline=["n","esc"]'];
 export const approvalPath = (id: string) => `${codexMicroStatePath(id)}.approval`;
 export type PendingApproval = { requestId: string | number; threadId: string; method: string; decisions: unknown[]; token: string };
@@ -56,7 +57,7 @@ export async function approvalEvidence(herdr: Pick<HerdrClient, "request">, agen
     const pending = JSON.parse(pendingText);
     if (registration.threadId !== id || registration.terminalId !== agent.terminal_id ||
         !processExists(registration.pid) || pending.pid !== registration.pid || pending.epoch !== registration.epoch ||
-        pending.version !== APPROVAL_VERSION || pending.keymap !== "fixed-y-n-v1" ||
+        !APPROVAL_VERSIONS.has(pending.version) || pending.keymap !== "fixed-y-n-v1" ||
         pending.threadId !== id || pending.method !== "item/commandExecution/requestApproval" ||
         !["string", "number"].includes(typeof pending.requestId) || typeof pending.token !== "string") return null;
     const result = await herdr.request("pane.read", { pane_id: agent.pane_id, source: "visible", format: "text", strip_ansi: true });

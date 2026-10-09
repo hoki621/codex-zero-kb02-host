@@ -43,6 +43,9 @@ test("approval evidence binds a supported prompt to the live exact thread and te
     await writeFile(target, JSON.stringify(registration), { flag: "wx", mode: 0o600 });
     await writeFile(approvalPath(id), JSON.stringify(pending), { flag: "wx", mode: 0o600 });
     assert.ok(await approvalEvidence(herdr, agent));
+    await writeFile(approvalPath(id), JSON.stringify({ ...pending, version: "codex-cli 0.160.0" }));
+    assert.ok(await approvalEvidence(herdr, agent));
+    await writeFile(approvalPath(id), JSON.stringify(pending));
     text = "What would you like me to do?"; assert.equal(await approvalEvidence(herdr, agent), null);
     text = screen.replace("Yes, proceed (y)", "Yes, proceed (p)"); assert.equal(await approvalEvidence(herdr, agent), null);
     text = screen; truncated = true; assert.equal(await approvalEvidence(herdr, agent), null);
