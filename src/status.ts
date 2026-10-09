@@ -1,3 +1,5 @@
+// Adapted from House of Herdr Codex Micro at 50b24e3 (MIT).
+// Owned-socket pattern; see THIRD_PARTY_NOTICES.md for the source and full notice.
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";

@@ -1,5 +1,5 @@
-// Adapted from House of Herdr's Codex Micro socket client. See
-// THIRD_PARTY_NOTICES.md for the pinned source and MIT license.
+// Adapted from House of Herdr Codex Micro at 50b24e3 (socket client, MIT).
+// See THIRD_PARTY_NOTICES.md for the pinned source and complete license.
 import net from "node:net";
 
 const CONNECT_TIMEOUT_MS = 5_000;

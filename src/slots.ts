@@ -1,5 +1,5 @@
-// Adapted from House of Herdr's Codex Micro sticky slot policy. See
-// THIRD_PARTY_NOTICES.md for the pinned source and MIT license.
+// Adapted from House of Herdr Codex Micro at 50b24e3 (sticky-slot policy, MIT).
+// See THIRD_PARTY_NOTICES.md for the pinned source and complete license.
 export const SLOT_COUNT = 6;
 
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown";

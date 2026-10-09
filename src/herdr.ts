@@ -1,5 +1,5 @@
-// Adapted from House of Herdr's Codex Micro Herdr client. See
-// THIRD_PARTY_NOTICES.md for the pinned source and MIT license.
+// Adapted from House of Herdr Codex Micro at 50b24e3 (Herdr client, MIT).
+// See THIRD_PARTY_NOTICES.md for the pinned source and complete license.
 import {
   connectSocket,
   readLines,
