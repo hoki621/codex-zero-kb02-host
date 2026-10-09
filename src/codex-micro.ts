@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ApprovalObserver, APPROVAL_VERSION, APPROVAL_KEYMAP_ARGS, approvalPath } from "./approval.js";
+import { ApprovalObserver, APPROVAL_VERSIONS, APPROVAL_KEYMAP_ARGS, approvalPath } from "./approval.js";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
@@ -199,7 +199,7 @@ async function main(): Promise<void> {
     registration = registration.then(async () => {
       if (!registered) return;
       const target = approvalPath(registered.threadId);
-      if (!pending || pending.threadId !== registered.threadId || binary.version !== APPROVAL_VERSION) {
+      if (!pending || pending.threadId !== registered.threadId || !APPROVAL_VERSIONS.has(binary.version)) {
         await rm(target, { force: true }); return;
       }
       const temporary = `${target}.${process.pid}.tmp`;
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
   }));
   let code = 1;
   try {
-    const codex = spawn(binary.binary, ["--remote", `unix://${relayPath}`, ...args, ...(binary.version === APPROVAL_VERSION ? APPROVAL_KEYMAP_ARGS : [])], { stdio: "inherit" });
+    const codex = spawn(binary.binary, ["--remote", `unix://${relayPath}`, ...args, ...(APPROVAL_VERSIONS.has(binary.version) ? APPROVAL_KEYMAP_ARGS : [])], { stdio: "inherit" });
     cli = codex;
     const stop = () => { codex.kill("SIGTERM"); };
     process.on("SIGINT", stop);

@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { DeviceMessage } from "./cdc.js";
 import type { HerdrClient, RawAgent } from "./herdr.js";
 import { AppServerSession } from "./app-server.js";
+import { PLUGIN_STATE_DIR } from "./status.js";
 import type { UsbInputContext } from "./usb.js";
 
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -21,11 +21,12 @@ function object(value: unknown): JsonObject | null {
 }
 
 export function defaultAppServerSocket(): string {
-  return path.join(os.tmpdir(), `zero-kb02-server-${process.getuid?.() ?? "user"}`, "app.sock");
+  // Herdr panes and normal terminals can have different TMPDIR values.
+  return path.join(PLUGIN_STATE_DIR, "server", "app.sock");
 }
 
 export function codexMicroStatePath(threadId: string): string {
-  return path.join(os.tmpdir(), `zero-kb02-codex-${process.getuid?.() ?? "user"}`, `${threadId}.json`);
+  return path.join(PLUGIN_STATE_DIR, "codex", `${threadId}.json`);
 }
 
 type CodexMicroState = {

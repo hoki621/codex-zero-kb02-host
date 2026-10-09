@@ -1,3 +1,5 @@
+// Adapted from House of Herdr Codex Micro at 50b24e3 (MIT).
+// Popup-toggle pattern; see THIRD_PARTY_NOTICES.md for the source and full notice.
 import type { DeviceMessage } from "./cdc.js";
 import { HerdrError, type HerdrClient } from "./herdr.js";
 import { PLUGIN_ENTRYPOINT, PLUGIN_ID } from "./status.js";

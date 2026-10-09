@@ -8,7 +8,23 @@ import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
+import { defaultAppServerSocket, codexMicroStatePath } from "../src/reasoning.js";
+
 const execute = promisify(execFile);
+
+test("shared server and registration paths do not depend on TMPDIR", () => {
+  const original = process.env.TMPDIR;
+  const expected = [defaultAppServerSocket(), codexMicroStatePath("thread")];
+  try {
+    process.env.TMPDIR = "/different/herdr/temp";
+    assert.deepEqual([defaultAppServerSocket(), codexMicroStatePath("thread")], expected);
+    delete process.env.TMPDIR;
+    assert.deepEqual([defaultAppServerSocket(), codexMicroStatePath("thread")], expected);
+  } finally {
+    if (original === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = original;
+  }
+});
 const launcher = fileURLToPath(new URL("../src/codex-micro.js", import.meta.url));
 const wsModule = fileURLToPath(new URL("../../node_modules/ws/index.js", import.meta.url));
 
@@ -26,7 +42,7 @@ test("brew-only launcher and dedicated server share a binary and clean up their 
 const fs = require('node:fs');
 const { WebSocket, WebSocketServer } = require(${JSON.stringify(wsModule)});
 const args = process.argv.slice(2);
-if (args[0] === '--version') { console.log('codex-cli 0.155.1'); process.exit(); }
+if (args[0] === '--version') { console.log('codex-cli 0.160.0'); process.exit(); }
 fs.appendFileSync(process.env.TRACE, JSON.stringify({binary:process.argv[1],args})+'\\n');
 if (args[0] === 'app-server') {
   const server = require('node:http').createServer();
@@ -47,7 +63,7 @@ if (args[0] === 'app-server') {
   ws.on('open',()=>ws.send(JSON.stringify({id:1,method:'thread/start'})));
   ws.on('message',()=>{
     if(args.includes('persist-failure')) {
-      const dir=require('node:path').join(process.env.TMPDIR,'zero-kb02-codex-'+process.getuid());
+      const dir=require('node:path').join(process.env.HOME,'.local/state/herdr/plugins/hoki621.zero-kb02/codex');
       fs.mkdirSync(require('node:path').join(dir,'01901234-5678-7abc-8def-0123456789ab.json.approval'));
       ws.send(JSON.stringify({method:'probe/fail-persistence'}));
     } else ws.close();
@@ -76,13 +92,13 @@ if (args[0] === 'app-server') {
     });
   });
   await new Promise<void>((resolve) => herdr.listen(socketPath, resolve));
-  const env = { ...process.env, TMPDIR: directory, PATH: `${trap}:${bin}:${process.env.PATH}`,
+  const env = { ...process.env, HOME: directory, TMPDIR: directory, PATH: `${trap}:${bin}:${process.env.PATH}`,
     TRACE: trace, HERDR_ENV: "1", HERDR_PANE_ID: "1-1", HERDR_SOCKET_PATH: socketPath };
   const server = spawn(process.execPath, [launcher, "server"], { env, stdio: ["ignore", "ignore", "pipe"] });
   let errors = "";
   server.stderr.on("data", (chunk) => { errors += chunk; });
   const exited = new Promise((resolve) => server.once("exit", resolve));
-  const ownedDirectory = path.join(directory, `zero-kb02-server-${process.getuid?.() ?? "user"}`);
+  const ownedDirectory = path.join(directory, ".local/state/herdr/plugins/hoki621.zero-kb02/server");
   try {
     let ready = false;
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -103,7 +119,7 @@ if (args[0] === 'app-server') {
     await assert.rejects(execute(process.execPath, [launcher, "server"], { env }), /Server already running/);
     const diagnostic = await execute(process.execPath, [launcher, "doctor"], { env });
     assert.ok(diagnostic.stdout.includes(binary));
-    await execute(process.execPath, [launcher], { env, timeout: 5_000 });
+    await execute(process.execPath, [launcher], { env: { ...env, TMPDIR: "/tmp" }, timeout: 5_000 });
     assert.deepEqual(reports, [{ pane_id: "1-1", source: "herdr:codex", agent: "codex", agent_session_id: "01901234-5678-7abc-8def-0123456789ab" }]);
     const commands = (await readFile(trace, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(commands.length, 2);
@@ -113,7 +129,7 @@ if (args[0] === 'app-server') {
     assert.equal(commands[1].args[0], "--remote");
     assert.ok(commands[1].args.includes('tui.keymap.approval.approve=["y"]'));
     assert.equal(server.exitCode, null, "CLI exit must not stop the dedicated server");
-    await assert.rejects(readFile(path.join(directory, `zero-kb02-codex-${process.getuid?.() ?? "user"}`, "01901234-5678-7abc-8def-0123456789ab.json")), /ENOENT/);
+    await assert.rejects(readFile(path.join(directory, ".local/state/herdr/plugins/hoki621.zero-kb02/codex", "01901234-5678-7abc-8def-0123456789ab.json")), /ENOENT/);
     await assert.rejects(execute(process.execPath, [launcher, "persist-failure"], { env, timeout: 5_000 }),
       (error: unknown) => {
         const failed = error as { code: number; stderr: string };
