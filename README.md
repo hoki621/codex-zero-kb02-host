@@ -1,35 +1,63 @@
 # codex-zero-kb02-host
 
-[日本語](README_JA.md) · [System setup and controls](https://github.com/hoki621/codex-zero-kb02#readme)
+[日本語](README_JA.md) · [Full setup and controls](https://github.com/hoki621/codex-zero-kb02/blob/main/README_EN.md)
 
-Node.js 22 / TypeScript bridge between Herdr, USB CDC major 2 and a dedicated Codex App Server. It maintains six stable agent slots and checks the live target before fixed operations.
+The Mac application that connects zero-kb02 to Herdr and Codex CLI. It displays up to six conversation states on the device, switches Herdr panes, and adjusts Codex reasoning effort.
 
-## Setup and run
+## Setup
 
-Install the parent's mise tools, Herdr and Homebrew Codex CLI first. From this directory:
+Install Herdr, Homebrew Codex CLI and the tools specified by the parent repository's `mise.toml` first. Use Node.js 22. From this directory:
 
 ```sh
 npm ci
 npm run build
 herdr plugin link --enabled "$PWD"
+```
+
+## Run
+
+Start Herdr normally. Use three separate terminals or panes:
+
+1. In a normal Terminal, from this directory, start the Codex App Server and keep it running:
+
+   ```sh
+   node dist/src/codex-micro.js server
+   ```
+
+2. In each Herdr pane, start Codex using the launcher. Replace `/absolute/path/to/host` with this directory's path:
+
+   ```sh
+   node /absolute/path/to/host/dist/src/codex-micro.js
+   ```
+
+   The launcher connects the conversation to its Herdr pane. Append `resume` to resume a conversation, or `fork` to branch one. It uses Homebrew Codex CLI and preserves your existing Codex configuration.
+
+3. In another normal Terminal, from this directory, start the device connection:
+
+   ```sh
+   HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" \
+   ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v21 node dist/src/main.js
+   ```
+
+   Replace the USB port with your device's exact path. Close any serial monitor using that port.
+
+Finish the Codex CLI sessions and stop the bridge before stopping App Server with Ctrl-C. Restart the server and CLI sessions after updating Codex CLI.
+
+## Compatibility and troubleshooting
+
+Reasoning and approval controls require conversations started with the launcher. Reasoning changes preserve the selected model.
+
+K9/K10 approval controls support Codex CLI **0.155.1 and 0.160.0 only**. They require a single command approval and a matching conversation, pane and visible prompt. Questions and file/network approvals are not supported. **Approval keys are disabled on 0.162.0.** K4 controls Herdr's shared popup and may close another plugin's popup.
+
+To check the installed Codex version and connection paths:
+
+```sh
 node dist/src/codex-micro.js doctor
 ```
 
-Start Herdr normally; use this launcher for device-controlled Codex sessions. No `TMPDIR` override is needed. In separate terminals:
+This check does not open USB or control Herdr. The bridge reconnects to the configured device port automatically; release any held keys before using them again. See [troubleshooting](docs/troubleshooting.md) for stale server or registration errors.
 
-```sh
-# Normal Terminal: keep the server running.
-node dist/src/codex-micro.js server
-# Each Herdr pane: append resume or fork when needed.
-node /absolute/path/to/host/dist/src/codex-micro.js
-# Another normal Terminal: specify the exact device port.
-HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock" \
-ZERO_KB02_PORT=/dev/cu.usbmodemzero_kb02_v21 node dist/src/main.js
-```
-
-The launcher selects the brew cask binary without editing existing Codex configuration. It registers the exact thread UUID returned by start/resume/fork. Finish remote CLI sessions before stopping the server with Ctrl-C. The bridge can stop independently. After a brew upgrade, restart the server and resume each CLI session.
-
-## Checks
+## Development checks
 
 ```sh
 npm run typecheck
@@ -40,26 +68,10 @@ npm run device:check -- display
 npm run device:check -- faults
 ```
 
-Device tools default to mocks. `doctor` inspects paths/version without opening USB or Herdr. For a real device, stop the bridge/monitors and append `--device --port /exact/device/path` to one tool at a time. `input` records keys/encoder, `display` runs six-slot selection/offline, and `faults` sends an overlong line then stays silent for 13 seconds. These tools send no Herdr actions.
+Device checks use mocks by default. For hardware checks, stop the bridge and serial monitors, then append `--device --port /exact/device/path` to one check at a time. `input` records keys and encoder movement; `display` tests slot selection and offline display; `faults` sends an overlong line and stops communication for 13 seconds. These checks do not operate Herdr.
 
-Optional `npm run smoke:codex` starts an isolated brew App Server and changes effort before any model turn. [Verification](https://github.com/hoki621/codex-zero-kb02/blob/main/docs/verification.md) separates mock/build checks from physical observations.
-
-## Operation boundaries and recovery
-
-K9/K10 support Codex CLI **0.155.1 and 0.160.0 only**. They require one pending command approval, exact live thread/terminal registration and a matching visible prompt checked twice. Unknown versions, questions, multiple and file/network approvals disable these keys. Process-only overrides fix y/n bindings; persistent approval is never selected. On 0.162.0 approval keys remain disabled.
-
-Effort updates include only thread ID and effort, never the model. Queues are bounded at 32 steps; stale context discards work. Herdr send and Codex state checks are separate APIs, leaving a final small race. K4 uses a session-wide popup and can close another plugin's popup.
-
-The bridge reconnects to the exact configured port/socket and resends state. Release held keys after reconnect. Use `lsof /exact/port` to identify your own monitor before closing it.
-
-For a stale server directory, inspect the PID/socket in its `server.json` with `ps -p PID -o pid=,command=` and `lsof /exact/path/app.sock`. Remove only that directory after confirming neither is in use. Never remove an active server directory. A launcher crash can leave a `.json.lock`; inspect the adjacent registration PID and running launchers before removing that lock.
-
-Server and thread registrations use `~/.local/state/herdr/plugins/hoki621.zero-kb02/`, shared with the status plugin. After updating from the TMPDIR-based version, finish the old CLI sessions and stop the old bridge/server, then restart all three. Existing processes are not migrated or stopped automatically.
-
-## Legacy hook migration
-
-If you previously ran `npm run install-codex-hook`, close Codex and back up `~/.codex/hooks.json`. Remove only the SessionStart hook running `/absolute/path/to/host/dist/src/codex-hook.js`, keep other hooks and validate the JSON. New installations need no hook.
+Optional `npm run smoke:codex` tests reasoning changes with an isolated Codex App Server without starting a model turn. The [verification record](https://github.com/hoki621/codex-zero-kb02/blob/main/docs/verification.md) lists software checks and hardware observations separately.
 
 ## Attribution
 
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) retains the MIT notice for House of Herdr Codex Micro at `50b24e3f334a38a84bfa356f154d49835dff2499`. Adapted files carry source comments. No workshop source is copied.
+This project adapts House of Herdr Codex Micro. Source comments identify adapted files; [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) retains its MIT license and source revision.
